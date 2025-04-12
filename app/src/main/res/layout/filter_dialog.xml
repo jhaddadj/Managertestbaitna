@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+
+    android:padding="16dp"
+    android:background="@drawable/back">
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+>
+
+    <!-- Date Selection -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Select Date Range"
+        android:textSize="18sp"
+        android:textColor="@color/textcolor"
+        android:textStyle="bold"
+        android:layout_marginBottom="8dp"/>
+
+    <Button
+        android:id="@+id/startDateButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Start Date"
+        android:background="@drawable/button_background"
+
+        android:textColor="@android:color/white"
+        android:backgroundTint="@color/my_light_primary"
+        android:layout_marginBottom="8dp"/>
+
+    <Button
+        android:id="@+id/endDateButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="End Date"
+        android:background="@drawable/button_background"
+
+        android:textColor="@android:color/white"
+        android:backgroundTint="@color/my_light_primary"
+        android:layout_marginBottom="16dp"/>
+
+    <!-- Weekday Selection -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Select Days"
+        android:textSize="18sp"
+        android:textColor="@color/textcolor"
+        android:textStyle="bold"
+        android:layout_marginBottom="8dp"/>
+
+    <CheckBox
+        android:id="@+id/checkbox_monday"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Monday"
+        android:checked="true"
+        android:textSize="16sp"
+        android:textColor="@color/textcolor"
+        android:layout_marginBottom="4dp"/>
+
+    <CheckBox
+        android:id="@+id/checkbox_tuesday"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Tuesday"
+        android:checked="true"
+        android:textSize="16sp"
+        android:textColor="@color/textcolor"
+        android:layout_marginBottom="4dp"/>
+
+    <CheckBox
+        android:id="@+id/checkbox_wednesday"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Wednesday"
+        android:checked="true"
+        android:textSize="16sp"
+        android:textColor="@color/textcolor"
+        android:layout_marginBottom="4dp"/>
+
+    <CheckBox
+        android:id="@+id/checkbox_thursday"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Thursday"
+        android:checked="true"
+        android:textSize="16sp"
+        android:textColor="@color/textcolor"
+        android:layout_marginBottom="4dp"/>
+
+    <CheckBox
+        android:id="@+id/checkbox_friday"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Friday"
+        android:checked="true"
+        android:textSize="16sp"
+        android:textColor="@color/textcolor"
+        android:layout_marginBottom="16dp"/>
+
+    <!-- Time Selection -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Select Time Range"
+        android:textSize="18sp"
+        android:textColor="@color/textcolor"
+        android:textStyle="bold"
+        android:layout_marginBottom="8dp"/>
+
+    <Button
+        android:id="@+id/startTimeButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Start Time: 09:00"
+        android:background="@drawable/button_background"
+
+        android:textColor="@android:color/white"
+        android:backgroundTint="@color/my_light_primary"
+        android:layout_marginBottom="8dp"/>
+
+    <Button
+        android:id="@+id/endTimeButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="End Time: 14:00"
+        android:background="@drawable/button_background"
+
+        android:textColor="@android:color/white"
+        android:backgroundTint="@color/my_light_primary"
+        android:layout_marginBottom="16dp"/>
+
+    <!-- Apply Filter Button -->
+    <Button
+        android:id="@+id/applyFilterButton"
+        android:layout_width="150dp"
+        android:layout_height="wrap_content"
+        android:text="Apply Filter"
+        android:background="@drawable/button_background"
+        android:layout_gravity="center"
+        android:textColor="@android:color/white"
+        android:backgroundTint="@color/my_light_primary"
+        android:textSize="16sp"
+        android:textStyle="bold"/>
+</LinearLayout>
+</ScrollView>

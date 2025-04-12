@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "1022398931049",
+    "firebase_url": "https://manager-f9102-default-rtdb.firebaseio.com",
+    "project_id": "manager-f9102",
+    "storage_bucket": "manager-f9102.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1022398931049:android:426c877ad4eb7dc117c2f8",
+        "android_client_info": {
+          "package_name": "com.example.manager"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDrpfDXcTRl0hKH6jpaKMxC7cb6j4Ykpks"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

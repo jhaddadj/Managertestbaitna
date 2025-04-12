@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission
+        android:name="android.permission.MEDIA_CONTENT_CONTROL"
+        tools:ignore="ProtectedPermissions" />
+
+    <application
+        android:name=".ManagerApplication"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Manager"
+        tools:targetApi="31">
+        <activity
+            android:name=".admin.ui.ViewTimetableActivity"
+            android:exported="false" />
+        <activity
+            android:name=".admin.ui.UnifiedTimetableGeneratorActivity"
+            android:exported="false" />
+        <activity
+            android:name=".admin.ui.DepartmentTimetablesActivity"
+            android:exported="false" />
+        <activity
+            android:name=".admin.ui.ConstraintSolverActivity"
+            android:exported="false" />
+        <activity
+            android:name=".stduent.ui.ViewScheduleStudentActivity"
+            android:exported="false" />
+        <activity
+            android:name=".lecturar.ui.ViewScheduleActivity"
+            android:exported="false" />
+
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="@string/google_maps_key" />
+
+        <activity
+            android:name=".admin.ui.AddScheduleActivity"
+            android:exported="false" />
+        <activity
+            android:name=".admin.ui.ViewImageActivity"
+            android:exported="false" />
+        <activity
+            android:name=".ui.SplashScreenActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name=".ui.LoginActivity"
+            android:exported="false" />
+        <activity
+            android:name=".admin.ui.AdminRegistrationActivity"
+            android:exported="false" />
+        <activity
+            android:name=".admin.ui.UserDetailActivity"
+            android:exported="false" />
+        <activity
+            android:name=".admin.ui.RequestCheckActivity"
+            android:exported="false" />
+        <activity
+            android:name=".admin.ui.TimetableInitializationActivity"
+            android:exported="false" />
+        <activity
+            android:name=".admin.ui.ResourceManagementActivity"
+            android:exported="false" />
+        <activity
+            android:name=".admin.ui.CourseManagementActivity"
+            android:exported="false" />
+        <activity
+            android:name=".stduent.ui.StudentMainActivity"
+            android:exported="false" />
+        <activity
+            android:name=".lecturar.ui.LecturerMainActivity"
+            android:exported="false" />
+        <activity
+            android:name=".lecturar.ui.LecturarRegistrationActivity"
+            android:exported="false" />
+        <activity
+            android:name=".stduent.ui.StudentRegistrationActivity"
+            android:exported="false" />
+        <activity
+            android:name=".ui.SelectActivity"
+            android:exported="false" />
+        <activity
+            android:name=".admin.ui.AdminMainActivity"
+            android:exported="true" />
+    </application>
+
+</manifest>

@@ -1,0 +1,396 @@
+package com.example.manager.timetable;
+
+import android.util.Log;
+
+import com.example.manager.admin.model.Resource;
+import com.example.manager.model.Lecturer;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * A timetable generator that uses constraint programming to automatically generate
+ * a timetable based on courses, lecturers, and resources while satisfying various constraints.
+ */
+public class ConstraintSolverTimetableGenerator implements TimetableGenerator {
+    private static final String TAG = "ConstraintSolver";
+    private static final int DAYS_PER_WEEK = 5; // Monday to Friday
+    private static final int HOURS_PER_DAY = 9; // 9 AM to 5 PM
+    private static final int MAX_HOURS_PER_DAY_PER_LECTURER = 6; // Maximum teaching hours per day per lecturer
+
+    @Override
+    public Timetable generateTimetable(List<Resource> resources, List<Lecturer> lecturers, List<Course> courses) {
+        // Call the overloaded method with default options
+        return generateTimetable(resources, lecturers, courses, new TimetableGeneratorOptions());
+    }
+
+    @Override
+    public Timetable generateTimetable(List<Resource> resources, List<Lecturer> lecturers, 
+                                     List<Course> courses, TimetableGeneratorOptions options) {
+        Timetable timetable = new Timetable();
+
+        try {
+            // Validate input data
+            if (resources == null || resources.isEmpty()) {
+                Log.e(TAG, "No resources provided for timetable generation");
+                return timetable;
+            }
+
+            if (lecturers == null || lecturers.isEmpty()) {
+                Log.e(TAG, "No lecturers provided for timetable generation");
+                return timetable;
+            }
+
+            if (courses == null || courses.isEmpty()) {
+                Log.e(TAG, "No courses provided for timetable generation");
+                return timetable;
+            }
+            
+            Log.d(TAG, "Generating timetable with options: avoidBackToBack=" + 
+                  options.shouldAvoidBackToBackClasses() + ", preferEvenDistribution=" + 
+                  options.shouldPreferEvenDistribution() + ", maxHoursPerDay=" + 
+                  options.getMaxHoursPerDay());
+
+            // Create a new CP model
+            CpModel model = new CpModel();
+
+            Log.d(TAG, "Creating constraint model for " + courses.size() + " courses, " 
+                  + lecturers.size() + " lecturers, and " + resources.size() + " resources");
+
+            // Create variable mappings
+            Map<String, IntVar> courseLecturerVars = new HashMap<>();
+            Map<String, IntVar> courseResourceVars = new HashMap<>();
+            Map<String, IntVar> courseDayVars = new HashMap<>();
+            Map<String, IntVar> courseHourVars = new HashMap<>();
+
+            // Create variables for each course
+            for (Course course : courses) {
+                String courseId = course.getId();
+
+                // Lecturer assignment: which lecturer is assigned to this course (index in lecturers list)
+                IntVar lecturerVar = model.newIntVar(0, lecturers.size() - 1, "lecturer_" + courseId);
+                courseLecturerVars.put(courseId, lecturerVar);
+
+                // Resource assignment: which resource is assigned to this course (index in resources list)
+                IntVar resourceVar = model.newIntVar(0, resources.size() - 1, "resource_" + courseId);
+                courseResourceVars.put(courseId, resourceVar);
+
+                // Day assignment: which day is this course scheduled on (0-4 for Monday-Friday)
+                IntVar dayVar = model.newIntVar(0, DAYS_PER_WEEK - 1, "day_" + courseId);
+                courseDayVars.put(courseId, dayVar);
+
+                // Hour assignment: which hour slot is this course scheduled to start (0-8 for 9 AM to 5 PM)
+                IntVar hourVar = model.newIntVar(0, HOURS_PER_DAY - 1, "hour_" + courseId);
+                courseHourVars.put(courseId, hourVar);
+            }
+
+            // Constraint 1: No lecturer can teach more than one course at the same time
+            for (int d = 0; d < DAYS_PER_WEEK; d++) {
+                for (int h = 0; h < HOURS_PER_DAY; h++) {
+                    for (int l = 0; l < lecturers.size(); l++) {
+                        // For each time slot and lecturer, collect all courses that might be assigned
+                        List<BoolVar> coursesAtThisTime = new ArrayList<>();
+
+                        for (Course course : courses) {
+                            String courseId = course.getId();
+
+                            // Create a boolean variable that's true if this course is assigned to this lecturer, day, and hour
+                            BoolVar isLecturerAssigned = model.newBoolVar("lecturer_" + l + "_course_" + courseId);
+                            BoolVar isDay = model.newBoolVar("day_" + d + "_course_" + courseId);
+                            BoolVar isHour = model.newBoolVar("hour_" + h + "_course_" + courseId);
+
+                            // Link boolean variables to the integer variables
+                            model.addEquality(courseLecturerVars.get(courseId), l).onlyEnforceIf(isLecturerAssigned);
+                            BoolVar notLecturerAssigned = model.newBoolVar("not_lecturer_" + l + "_course_" + courseId);
+                            model.addDifferent(courseLecturerVars.get(courseId), l).onlyEnforceIf(notLecturerAssigned);
+                            model.addEquality(courseLecturerVars.get(courseId), l).onlyEnforceIf(isLecturerAssigned);
+
+                            model.addEquality(courseDayVars.get(courseId), d).onlyEnforceIf(isDay);
+                            BoolVar notDay = model.newBoolVar("not_day_" + d + "_course_" + courseId);
+                            model.addDifferent(courseDayVars.get(courseId), d).onlyEnforceIf(notDay);
+                            model.addEquality(courseDayVars.get(courseId), d).onlyEnforceIf(isDay);
+
+                            model.addEquality(courseHourVars.get(courseId), h).onlyEnforceIf(isHour);
+                            BoolVar notHour = model.newBoolVar("not_hour_" + h + "_course_" + courseId);
+                            model.addDifferent(courseHourVars.get(courseId), h).onlyEnforceIf(notHour);
+                            model.addEquality(courseHourVars.get(courseId), h).onlyEnforceIf(isHour);
+
+                            // Create a boolean variable that's true if all three conditions are met
+                            BoolVar courseWithLecturerAtThisTime = model.newBoolVar("course_" + courseId + "_lecturer_" + l + "_day_" + d + "_hour_" + h);
+
+                            // Link this boolean to the three conditions
+                            model.addBoolAnd(new BoolVar[] {isLecturerAssigned, isDay, isHour})
+                                    .onlyEnforceIf(courseWithLecturerAtThisTime);
+
+                            BoolVar notCourseWithLecturerAtThisTime = model.newBoolVar("not_course_" + courseId + "_lecturer_" + l + "_day_" + d + "_hour_" + h);
+                            model.addBoolOr(new BoolVar[] {notLecturerAssigned, notDay, notHour})
+                                    .onlyEnforceIf(notCourseWithLecturerAtThisTime);
+                            model.addBoolAnd(new BoolVar[] {isLecturerAssigned, isDay, isHour})
+                                    .onlyEnforceIf(courseWithLecturerAtThisTime);
+
+                            coursesAtThisTime.add(courseWithLecturerAtThisTime);
+                        }
+
+                        // Ensure no more than one course is assigned to this lecturer at this time
+                        model.addLessOrEqual(LinearExpr.sum(coursesAtThisTime.toArray(new BoolVar[0])), 1);
+                    }
+                }
+            }
+
+            // Constraint 2: No resource can be used for more than one course at the same time
+            for (int d = 0; d < DAYS_PER_WEEK; d++) {
+                for (int h = 0; h < HOURS_PER_DAY; h++) {
+                    for (int r = 0; r < resources.size(); r++) {
+                        // For each time slot and resource, collect all courses that might be assigned
+                        List<BoolVar> coursesAtThisTime = new ArrayList<>();
+
+                        for (Course course : courses) {
+                            String courseId = course.getId();
+
+                            // Create a boolean variable that's true if this course is assigned to this resource, day, and hour
+                            BoolVar isResourceAssigned = model.newBoolVar("resource_" + r + "_course_" + courseId);
+                            BoolVar isDay = model.newBoolVar("day_" + d + "_course_" + courseId + "_res_constraint");
+                            BoolVar isHour = model.newBoolVar("hour_" + h + "_course_" + courseId + "_res_constraint");
+
+                            // Link boolean variables to the integer variables
+                            model.addEquality(courseResourceVars.get(courseId), r).onlyEnforceIf(isResourceAssigned);
+                            BoolVar notResourceAssigned = model.newBoolVar("not_resource_" + r + "_course_" + courseId);
+                            model.addDifferent(courseResourceVars.get(courseId), r).onlyEnforceIf(notResourceAssigned);
+                            model.addEquality(courseResourceVars.get(courseId), r).onlyEnforceIf(isResourceAssigned);
+
+                            model.addEquality(courseDayVars.get(courseId), d).onlyEnforceIf(isDay);
+                            BoolVar notDay = model.newBoolVar("not_day_" + d + "_course_" + courseId + "_res_constraint");
+                            model.addDifferent(courseDayVars.get(courseId), d).onlyEnforceIf(notDay);
+                            model.addEquality(courseDayVars.get(courseId), d).onlyEnforceIf(isDay);
+
+                            model.addEquality(courseHourVars.get(courseId), h).onlyEnforceIf(isHour);
+                            BoolVar notHour = model.newBoolVar("not_hour_" + h + "_course_" + courseId + "_res_constraint");
+                            model.addDifferent(courseHourVars.get(courseId), h).onlyEnforceIf(notHour);
+                            model.addEquality(courseHourVars.get(courseId), h).onlyEnforceIf(isHour);
+
+                            // Create a boolean variable that's true if all three conditions are met
+                            BoolVar courseWithResourceAtThisTime = model.newBoolVar("course_" + courseId + "_resource_" + r + "_day_" + d + "_hour_" + h);
+
+                            // Link this boolean to the three conditions
+                            model.addBoolAnd(new BoolVar[] {isResourceAssigned, isDay, isHour})
+                                    .onlyEnforceIf(courseWithResourceAtThisTime);
+
+                            BoolVar notCourseWithResourceAtThisTime = model.newBoolVar("not_course_" + courseId + "_resource_" + r + "_day_" + d + "_hour_" + h);
+                            model.addBoolOr(new BoolVar[] {notResourceAssigned, notDay, notHour})
+                                    .onlyEnforceIf(notCourseWithResourceAtThisTime);
+                            model.addBoolAnd(new BoolVar[] {isResourceAssigned, isDay, isHour})
+                                    .onlyEnforceIf(courseWithResourceAtThisTime);
+
+                            coursesAtThisTime.add(courseWithResourceAtThisTime);
+                        }
+
+                        // Ensure no more than one course is assigned to this resource at this time
+                        model.addLessOrEqual(LinearExpr.sum(coursesAtThisTime.toArray(new BoolVar[0])), 1);
+                    }
+                }
+            }
+
+            // Constraint 3: Courses requiring specific room types must be assigned to appropriate resources
+            for (Course course : courses) {
+                String courseId = course.getId();
+                String requiredRoomType = course.getRequiredRoomType();
+
+                if (requiredRoomType != null && !requiredRoomType.isEmpty()) {
+                    // Find all resources that match the required type
+                    List<Integer> validIndices = new ArrayList<>();
+                    for (int r = 0; r < resources.size(); r++) {
+                        Resource resource = resources.get(r);
+                        if (resource.getType().equals(requiredRoomType)) {
+                            validIndices.add(r);
+                        }
+                    }
+
+                    // If we found any valid resources, add them as allowed values
+                    if (!validIndices.isEmpty()) {
+                        IntVar resourceVar = courseResourceVars.get(courseId);
+                        // Convert ArrayList<Integer> to int[]
+                        int[] validIndicesArray = new int[validIndices.size()];
+                        for (int i = 0; i < validIndices.size(); i++) {
+                            validIndicesArray[i] = validIndices.get(i);
+                        }
+                        // Add allowed values constraint
+                        // Use a different approach for allowed values
+                        for (int validIndex : validIndicesArray) {
+                            // Create a boolean variable for each valid assignment
+                            BoolVar isValidResource = model.newBoolVar("is_valid_resource_" + validIndex + "_for_course_" + courseId);
+
+                            // Link this boolean to the resource variable
+                            model.addEquality(resourceVar, validIndex).onlyEnforceIf(isValidResource);
+                            model.addDifferent(resourceVar, validIndex).onlyEnforceIf(isValidResource.not());
+                        }
+                    }
+                }
+            }
+
+            // Constraint 4: Lecturers should not teach more than MAX_HOURS_PER_DAY_PER_LECTURER hours per day
+            for (int l = 0; l < lecturers.size(); l++) {
+                for (int d = 0; d < DAYS_PER_WEEK; d++) {
+                    List<BoolVar> teachingHoursForLecturer = new ArrayList<>();
+
+                    for (Course course : courses) {
+                        String courseId = course.getId();
+
+                        // Create boolean variables for lecturer and day assignments
+                        BoolVar isLecturerAssigned = model.newBoolVar("lecturer_" + l + "_course_" + courseId + "_constraint4");
+                        BoolVar isDay = model.newBoolVar("day_" + d + "_course_" + courseId + "_constraint4");
+
+                        // Link boolean variables to integer variables
+                        model.addEquality(courseLecturerVars.get(courseId), l).onlyEnforceIf(isLecturerAssigned);
+                        BoolVar notLecturerAssigned = model.newBoolVar("not_lecturer_" + l + "_course_" + courseId + "_constraint4");
+                        model.addDifferent(courseLecturerVars.get(courseId), l).onlyEnforceIf(notLecturerAssigned);
+
+                        model.addEquality(courseDayVars.get(courseId), d).onlyEnforceIf(isDay);
+                        BoolVar notDay = model.newBoolVar("not_day_" + d + "_course_" + courseId + "_constraint4");
+                        model.addDifferent(courseDayVars.get(courseId), d).onlyEnforceIf(notDay);
+
+                        // Variable that indicates this course is taught by this lecturer on this day
+                        BoolVar isTeachingCourseOnDay = model.newBoolVar("lecturer_" + l + "_teaching_" + courseId + "_day_" + d);
+
+                        model.addBoolAnd(new BoolVar[] {isLecturerAssigned, isDay}).onlyEnforceIf(isTeachingCourseOnDay);
+
+                        BoolVar notTeachingCourseOnDay = model.newBoolVar("not_lecturer_" + l + "_teaching_" + courseId + "_day_" + d);
+                        model.addBoolOr(new BoolVar[] {notLecturerAssigned, notDay}).onlyEnforceIf(notTeachingCourseOnDay);
+
+                        // For each course, add the number of required sessions
+                        IntVar hoursForCourse = model.newIntVar(0, course.getRequiredSessionsPerWeek(), "hours_" + courseId + "_lecturer_" + l + "_day_" + d);
+
+                        model.addEquality(hoursForCourse, course.getRequiredSessionsPerWeek()).onlyEnforceIf(isTeachingCourseOnDay);
+                        model.addEquality(hoursForCourse, 0).onlyEnforceIf(notTeachingCourseOnDay);
+
+                        // Add this to our running sum for this lecturer on this day
+                        for (int i = 0; i < course.getRequiredSessionsPerWeek(); i++) {
+                            teachingHoursForLecturer.add(isTeachingCourseOnDay);
+                        }
+                    }
+
+                    // Ensure lecturer doesn't exceed maximum hours per day
+                    model.addLessOrEqual(LinearExpr.sum(teachingHoursForLecturer.toArray(new BoolVar[0])), options.getMaxHoursPerDay());
+                }
+            }
+
+            // Solve the model
+            CpSolver solver = new CpSolver();
+            solver.getParameters().setMaxTimeInSeconds(30);
+            CpSolverStatus status = solver.solve(model);
+
+            Log.d(TAG, "Solver status: " + status);
+
+            // Process the solution
+            if (status == CpSolverStatus.OPTIMAL || status == CpSolverStatus.FEASIBLE) {
+                Log.d(TAG, "Solution found!");
+
+                // Create timetable sessions from the solution
+                for (Course course : courses) {
+                    String courseId = course.getId();
+
+                    // Get the assigned values
+                    int lecturerIndex = (int) solver.value(courseLecturerVars.get(courseId));
+                    int resourceIndex = (int) solver.value(courseResourceVars.get(courseId));
+                    int day = (int) solver.value(courseDayVars.get(courseId));
+                    int hour = (int) solver.value(courseHourVars.get(courseId));
+
+                    // Get the actual objects
+                    Lecturer lecturer = lecturers.get(lecturerIndex);
+                    Resource resource = resources.get(resourceIndex);
+
+                    // Convert day index to day name
+                    String[] dayNames = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday"};
+                    String dayName = dayNames[day];
+
+                    // Convert hour index to time string (assuming 1-hour sessions starting at 9 AM)
+                    String startTime = (9 + hour) + ":00";
+                    String endTime = (10 + hour) + ":00";
+
+                    // Create a new session
+                    TimetableSession session = new TimetableSession(
+                            null, // ID will be set when saving to Firebase
+                            courseId,
+                            course.getName(),
+                            lecturer.getId(),
+                            lecturer.getName(),
+                            resource.getId(),
+                            resource.getName(),
+                            dayName,
+                            startTime,
+                            endTime,
+                            "Lecture" // Default session type
+                    );
+
+                    // Add to timetable
+                    timetable.addSession(session);
+
+                    Log.d(TAG, "Added session: " + course.getName() +
+                            " with " + lecturer.getName());
+                }
+            } else {
+                Log.e(TAG, "No solution found!");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error in constraint solver", e);
+            e.printStackTrace();
+        }
+
+        return timetable;
+    }
+
+    @Override
+    public boolean hasConflicts(Timetable timetable) {
+        // Check for lecturer conflicts
+        Map<String, List<TimetableSession>> lecturerSessions = new HashMap<>();
+
+        // Group sessions by lecturer
+        for (TimetableSession session : timetable.getSessions()) {
+            String lecturerId = session.getLecturerId();
+            if (!lecturerSessions.containsKey(lecturerId)) {
+                lecturerSessions.put(lecturerId, new ArrayList<>());
+            }
+            lecturerSessions.get(lecturerId).add(session);
+        }
+
+        // Check each lecturer's sessions for conflicts
+        for (List<TimetableSession> sessions : lecturerSessions.values()) {
+            for (int i = 0; i < sessions.size(); i++) {
+                for (int j = i + 1; j < sessions.size(); j++) {
+                    if (sessions.get(i).getDayOfWeek().equals(sessions.get(j).getDayOfWeek()) &&
+                            sessions.get(i).overlapsWith(sessions.get(j))) {
+                        return true; // Conflict found
+                    }
+                }
+            }
+        }
+
+        // Check for resource conflicts
+        Map<String, List<TimetableSession>> resourceSessions = new HashMap<>();
+
+        // Group sessions by resource
+        for (TimetableSession session : timetable.getSessions()) {
+            String resourceId = session.getResourceId();
+            if (!resourceSessions.containsKey(resourceId)) {
+                resourceSessions.put(resourceId, new ArrayList<>());
+            }
+            resourceSessions.get(resourceId).add(session);
+        }
+
+        // Check each resource's sessions for conflicts
+        for (List<TimetableSession> sessions : resourceSessions.values()) {
+            for (int i = 0; i < sessions.size(); i++) {
+                for (int j = i + 1; j < sessions.size(); j++) {
+                    if (sessions.get(i).getDayOfWeek().equals(sessions.get(j).getDayOfWeek()) &&
+                            sessions.get(i).overlapsWith(sessions.get(j))) {
+                        return true; // Conflict found
+                    }
+                }
+            }
+        }
+
+        // No conflicts found
+        return false;
+    }
+}

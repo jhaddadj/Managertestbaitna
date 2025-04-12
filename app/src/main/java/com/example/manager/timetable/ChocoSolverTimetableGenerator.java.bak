@@ -1,0 +1,883 @@
+/**
+ * This class uses Choco Solver to generate a timetable.
+ * Choco Solver is a constraint programming library.
+ */
+package com.example.manager.timetable;
+
+import android.util.Log;
+
+import com.example.manager.admin.model.Resource;
+import com.example.manager.model.Lecturer;
+import com.example.manager.timetable.Course;
+import com.example.manager.timetable.Timetable;
+import com.example.manager.timetable.TimetableSession;
+import com.example.manager.timetable.TimetableGenerator;
+import com.example.manager.timetable.TimetableGeneratorOptions;
+
+import org.chocosolver.solver.Model;
+import org.chocosolver.solver.Solution;
+import org.chocosolver.solver.Solver;
+import org.chocosolver.solver.search.strategy.Search;
+import org.chocosolver.solver.variables.IntVar;
+import org.chocosolver.solver.variables.Variable;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+
+/**
+ * ChocoSolverTimetableGenerator - Advanced Timetable Generator using Choco Solver
+ * 
+ * This class implements the TimetableGenerator interface using the Choco Solver constraint
+ * programming library. It formulates the timetable generation problem using decision variables
+ * and constraints, and uses Choco's search algorithms to find optimal solutions.
+ * 
+ * Features:
+ * - Handles hard constraints like avoiding double-booking
+ * - Supports soft constraints like even distribution and back-to-back avoidance
+ * - Uses advanced variable and value selection heuristics for efficient solving
+ * - Falls back to a less optimal but valid solution if optimal solving times out
+ * 
+ * Dependencies: 
+ * - Requires org.choco-solver:choco-solver library (version 4.10.10)
+ * 
+ * @see TimetableGenerator
+ * @see SimpleTimetableGenerator
+ */
+public class ChocoSolverTimetableGenerator implements TimetableGenerator {
+    private static final String TAG = "ChocoSolverTimetable";
+    
+    // Constants for timetable dimensions
+    private static final int DAYS_PER_WEEK = 5; // Monday to Friday
+    private static final int HOURS_PER_DAY = 8; // 9 AM to 5 PM
+    private static final int START_HOUR = 9;    // Starting at 9 AM
+    
+    // Days of the week for output formatting
+    private static final String[] DAYS_OF_WEEK = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday"};
+    
+    // Timeout for solver (in milliseconds)
+    private static final int DEFAULT_TIMEOUT_MS = 30000; // 30 seconds
+    
+    @Override
+    public Timetable generateTimetable(List<Resource> resources, List<Lecturer> lecturers, List<Course> courses) {
+        TimetableGenerationOptions options = new TimetableGenerationOptions();
+        return generateTimetable(resources, lecturers, courses, options);
+    }
+
+    @Override
+    public Timetable generateTimetable(List<Resource> resources, List<Lecturer> lecturers, List<Course> courses, TimetableGenerationOptions options) {
+        
+        Log.d(TAG, "Starting Choco Solver timetable generation with " + courses.size() + " courses");
+        
+        // Make copies of the input collections to avoid modifying the originals
+        List<Resource> resourcesCopy = new ArrayList<>(resources);
+        List<Lecturer> lecturersCopy = new ArrayList<>(lecturers);
+        
+        // Track all course IDs for verification
+        Set<String> allCourseIds = new HashSet<>();
+        for (Course course : courses) {
+            allCourseIds.add(course.getId());
+            Log.d(TAG, "Input course: " + course.getName() + " (" + course.getId() + ")");
+        }
+        
+        // Validate courses
+        List<Course> validCourses = new ArrayList<>();
+        for (Course course : courses) {
+            // Ensure course has required sessions
+            if (course.getRequiredSessionsPerWeek() <= 0) {
+                Log.w(TAG, "Course " + course.getName() + " has " + course.getRequiredSessionsPerWeek() + 
+                      " required sessions, setting to at least 1");
+                course.setRequiredSessionsPerWeek(1);
+            }
+            
+            validCourses.add(course);
+            Log.d(TAG, "Validated course: " + course.getName() + " with " + course.getRequiredSessionsPerWeek() + " sessions");
+        }
+        
+        // Exit early if no valid courses
+        if (validCourses.isEmpty()) {
+            Log.e(TAG, "No valid courses to schedule");
+            return new Timetable();
+        }
+        
+        // Even if the solver fails, we'll return a timetable with all courses
+        Timetable fallbackTimetable = createManualTimetable(validCourses, resourcesCopy, lecturersCopy);
+        
+        // Try to solve with Choco Solver
+        Timetable solverTimetable = null;
+        try {
+            solverTimetable = solveWithChocoSolver(validCourses, resourcesCopy, lecturersCopy, options);
+            
+            // Verify all courses are included
+            if (solverTimetable != null) {
+                Set<String> scheduledCourseIds = new HashSet<>();
+                for (TimetableSession session : solverTimetable.getSessions()) {
+                    scheduledCourseIds.add(session.getCourseId());
+                }
+                
+                // Find missing courses
+                List<Course> missingCourses = new ArrayList<>();
+                for (Course course : validCourses) {
+                    if (!scheduledCourseIds.contains(course.getId())) {
+                        missingCourses.add(course);
+                        Log.w(TAG, "Course missing from solver timetable: " + course.getName() + " (ID: " + course.getId() + ")");
+                    }
+                }
+                
+                // Add any missing courses from the fallback timetable
+                if (!missingCourses.isEmpty()) {
+                    Log.d(TAG, "Adding " + missingCourses.size() + " missing courses from fallback timetable");
+                    
+                    // Get sessions for missing courses from fallback timetable
+                    for (TimetableSession session : fallbackTimetable.getSessions()) {
+                        String courseId = session.getCourseId();
+                        for (Course course : missingCourses) {
+                            if (courseId.equals(course.getId())) {
+                                solverTimetable.addSession(session);
+                                Log.d(TAG, "Added fallback session for " + session.getCourseName() + " on " + 
+                                      session.getDayOfWeek() + " at " + session.getStartTime());
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                // Final verification
+                scheduledCourseIds.clear();
+                for (TimetableSession session : solverTimetable.getSessions()) {
+                    scheduledCourseIds.add(session.getCourseId());
+                }
+                
+                Log.d(TAG, "Final timetable contains " + scheduledCourseIds.size() + "/" + validCourses.size() + 
+                      " courses with " + solverTimetable.getSessions().size() + " total sessions");
+                
+                for (Course course : validCourses) {
+                    boolean isIncluded = scheduledCourseIds.contains(course.getId());
+                    Log.d(TAG, "Course " + course.getName() + " (" + course.getId() + ") is " + 
+                          (isIncluded ? "INCLUDED" : "MISSING!"));
+                    
+                    // Last resort: manually add sessions for any still-missing courses
+                    if (!isIncluded) {
+                        addManualSessionsForCourse(course, resourcesCopy, lecturersCopy, solverTimetable);
+                    }
+                }
+                
+                return solverTimetable;
+            }
+        } catch (Throwable e) {
+            Log.e(TAG, "Error solving with Choco Solver", e);
+        }
+        
+        // If solver failed completely, use the fallback timetable
+        Log.d(TAG, "Using manual fallback timetable with " + fallbackTimetable.getSessions().size() + " sessions");
+        
+        // Verify all courses are in the fallback timetable
+        Set<String> fallbackCourseIds = new HashSet<>();
+        for (TimetableSession session : fallbackTimetable.getSessions()) {
+            fallbackCourseIds.add(session.getCourseId());
+        }
+        
+        for (Course course : validCourses) {
+            boolean isIncluded = fallbackCourseIds.contains(course.getId());
+            Log.d(TAG, "Course " + course.getName() + " (" + course.getId() + ") is " + 
+                  (isIncluded ? "INCLUDED in fallback" : "MISSING from fallback!"));
+            
+            if (!isIncluded) {
+                addManualSessionsForCourse(course, resourcesCopy, lecturersCopy, fallbackTimetable);
+            }
+        }
+        
+        return fallbackTimetable;
+    }
+    
+    /**
+     * Attempt to solve the timetable using Choco Solver
+     */
+    private Timetable solveWithChocoSolver(List<Course> validCourses, List<Resource> resources, 
+                                           List<Lecturer> lecturers, TimetableGenerationOptions options) {
+        // Create flat list of all sessions to schedule
+        List<SessionToSchedule> allSessions = new ArrayList<>();
+        
+        // Add sessions for each course based on required sessions
+        int sessionIndex = 0;
+        for (Course course : validCourses) {
+            for (int i = 0; i < course.getRequiredSessionsPerWeek(); i++) {
+                SessionToSchedule session = new SessionToSchedule(sessionIndex++, course);
+                allSessions.add(session);
+                Log.d(TAG, "Added session " + i + " for course " + course.getName() + " (index=" + session.getIndex() + ")");
+            }
+        }
+        
+        // Create a Choco-solver model
+        Model model = new Model("Timetable");
+        
+        // Set up solver with random search and timeout
+        Solver solver = model.getSolver();
+        solver.limitTime(DEFAULT_TIMEOUT_MS);
+        
+        // Get all integer variables for search
+        IntVar[] intVars = getIntVars(model);
+        
+        // Set search strategy with a specific seed for reproducibility
+        solver.setSearch(Search.randomSearch(intVars, System.currentTimeMillis()));
+        
+        // Create decision variables
+        Map<Integer, IntVar> sessionDayVars = new HashMap<>();
+        Map<Integer, IntVar> sessionHourVars = new HashMap<>();
+        Map<Integer, IntVar> sessionResourceVars = new HashMap<>();
+        Map<Integer, IntVar> sessionLecturerVars = new HashMap<>();
+        
+        // Create variables for each session
+        for (SessionToSchedule session : allSessions) {
+            int sIndex = session.getIndex();
+            Course course = session.getCourse();
+            
+            // Variables for day, hour, resource, and lecturer
+            IntVar day = model.intVar("day_" + sIndex, 0, DAYS_PER_WEEK - 1);
+            IntVar hour = model.intVar("hour_" + sIndex, 0, HOURS_PER_DAY - 1);
+            
+            // Find compatible resources for this session
+            List<Integer> compatibleResourceIndices = findCompatibleResources(course, resources);
+            
+            // Log warning if no compatible resources found
+            if (compatibleResourceIndices.isEmpty()) {
+                Log.w(TAG, "WARNING: Course " + course.getName() + " (ID: " + course.getId() + 
+                      ") has no compatible resources and may not be scheduled");
+                // Add any resource index to prevent solver failure
+                if (!resources.isEmpty()) {
+                    compatibleResourceIndices.add(0); // Add first resource as fallback
+                    Log.d(TAG, "Added fallback resource for " + course.getName());
+                }
+            }
+            
+            IntVar resource = model.intVar("resource_" + sIndex, compatibleResourceIndices.stream().mapToInt(i -> i).toArray());
+            
+            // If the course has an assigned resource, constrain to that resource
+            if (course.getAssignedResourceId() != null && !course.getAssignedResourceId().isEmpty()) {
+                for (int j = 0; j < resources.size(); j++) {
+                    Resource res = resources.get(j);
+                    if (res.getId().equals(course.getAssignedResourceId())) {
+                        // Set the resource variable to this specific resource index
+                        resource = model.intVar("resource_" + sIndex, j);
+                        Log.d(TAG, "Course " + course.getName() + " constrained to resource " + res.getName());
+                        break;
+                    }
+                }
+            }
+            
+            // Create lecturer variable - can be any lecturer by default
+            IntVar lecturer = model.intVar("lecturer_" + sIndex, 0, lecturers.size() - 1);
+            
+            // If the course has an assigned lecturer, constrain to that lecturer
+            if (course.getAssignedLecturerId() != null && !course.getAssignedLecturerId().isEmpty()) {
+                for (int j = 0; j < lecturers.size(); j++) {
+                    Lecturer lect = lecturers.get(j);
+                    if (lect.getId().equals(course.getAssignedLecturerId())) {
+                        // Set the lecturer variable to this specific lecturer index
+                        lecturer = model.intVar("lecturer_" + sIndex, j);
+                        Log.d(TAG, "Course " + course.getName() + " constrained to lecturer " + lect.getName());
+                        break;
+                    }
+                }
+            }
+            
+            // Store variables in maps for easy lookup
+            sessionDayVars.put(sIndex, day);
+            sessionHourVars.put(sIndex, hour);
+            sessionResourceVars.put(sIndex, resource);
+            sessionLecturerVars.put(sIndex, lecturer);
+            
+            // Log session details
+            Log.d(TAG, "Created variables for session " + sIndex + " of course " + course.getName() + 
+                " (" + course.getId() + "): " + 
+                "day=" + day + ", hour=" + hour + ", resource=" + resource + ", lecturer=" + lecturer);
+        }
+        
+        // Add constraints
+        addConstraints(model, allSessions, sessionDayVars, sessionHourVars, sessionResourceVars, sessionLecturerVars);
+        
+        // Log all courses being scheduled
+        Log.d(TAG, "Courses being scheduled:");
+        for (Course course : validCourses) {
+            Log.d(TAG, "Course: " + course.getName() + " (" + course.getId() + ") - " + 
+                course.getRequiredSessionsPerWeek() + " sessions");
+        }
+        
+        // Try to find a solution
+        Solution solution = solver.findSolution();
+        
+        if (solution != null) {
+            Log.d(TAG, "Solution found!");
+            return buildTimetableFromSolution(
+                model, solver, solution, allSessions, resources, lecturers, validCourses,
+                sessionDayVars, sessionHourVars, sessionResourceVars, sessionLecturerVars
+            );
+        } else {
+            Log.w(TAG, "No solution found. Trying with increased timeout.");
+            
+            // Increase timeout and try again
+            solver.limitTime(DEFAULT_TIMEOUT_MS * 2);
+            solution = solver.findSolution();
+            
+            if (solution != null) {
+                Log.d(TAG, "Solution found with increased timeout!");
+                return buildTimetableFromSolution(
+                    model, solver, solution, allSessions, resources, lecturers, validCourses,
+                    sessionDayVars, sessionHourVars, sessionResourceVars, sessionLecturerVars
+                );
+            } else {
+                Log.e(TAG, "Choco Solver could not find a solution even with increased timeout.");
+                
+                // As a last resort, create a basic timetable with all courses manually scheduled
+                Timetable manualTimetable = createManualTimetable(validCourses, resources, lecturers);
+                
+                // Verify all courses are included
+                Set<String> scheduledCourseIds = new HashSet<>();
+                for (TimetableSession session : manualTimetable.getSessions()) {
+                    scheduledCourseIds.add(session.getCourseId());
+                }
+                
+                List<Course> missingCourses = new ArrayList<>();
+                for (Course course : validCourses) {
+                    if (!scheduledCourseIds.contains(course.getId())) {
+                        missingCourses.add(course);
+                        Log.w(TAG, "Course still missing after manual addition: " + course.getName() + 
+                            " (ID: " + course.getId() + ")");
+                    }
+                }
+                
+                if (!missingCourses.isEmpty()) {
+                    Log.e(TAG, "Still missing " + missingCourses.size() + " courses after manual addition!");
+                    
+                    // Last resort: Manually add missing courses
+                    for (Course course : missingCourses) {
+                        Resource resource = resources.isEmpty() ? null : resources.get(0);
+                        Lecturer lecturer = lecturers.isEmpty() ? null : lecturers.get(0);
+                        
+                        if (resource != null && lecturer != null) {
+                            for (int i = 0; i < course.getRequiredSessionsPerWeek(); i++) {
+                                TimetableSession session = new TimetableSession();
+                                session.setId(UUID.randomUUID().toString());
+                                session.setCourseName(course.getName());
+                                session.setCourseId(course.getId());
+                                session.setSessionType(course.getCode() != null ? course.getCode() : "LECTURE");
+                                
+                                // Use day and time based on session index
+                                int day = i % 5;  // Monday to Friday
+                                int hour = 9 + (i / 5) % 8;  // 9 AM to 4 PM
+                                
+                                session.setDayOfWeek(DAYS_OF_WEEK[day]);
+                                session.setStartTime(String.format("%02d:00", hour));
+                                session.setEndTime(String.format("%02d:00", hour + 1));
+                                
+                                session.setResourceId(resource.getId());
+                                session.setResourceName(resource.getName());
+                                session.setLecturerId(lecturer.getId());
+                                session.setLecturerName(lecturer.getName());
+                                
+                                manualTimetable.addSession(session);
+                                
+                                Log.d(TAG, "Added manual session for " + course.getName() + 
+                                    " (" + course.getId() + ") on " + session.getDayOfWeek() + 
+                                    " at " + session.getStartTime());
+                            }
+                        }
+                    }
+                }
+                
+                return manualTimetable;
+            }
+        }
+    }
+
+    private Timetable buildTimetableFromSolution(Model model, Solver solver, Solution solution, 
+                                                 List<SessionToSchedule> allSessions, 
+                                                 List<Resource> resources, List<Lecturer> lecturers, 
+                                                 List<Course> validCourses, 
+                                                 Map<Integer, IntVar> sessionDayVars, 
+                                                 Map<Integer, IntVar> sessionHourVars, 
+                                                 Map<Integer, IntVar> sessionResourceVars, 
+                                                 Map<Integer, IntVar> sessionLecturerVars) {
+        Timetable timetable = new Timetable();
+        
+        // Process each session to create timetable entries
+        for (SessionToSchedule session : allSessions) {
+            int sessionId = session.getIndex();
+            
+            // Get values from solution
+            IntVar dayVar = sessionDayVars.get(sessionId);
+            IntVar hourVar = sessionHourVars.get(sessionId);
+            IntVar resourceVar = sessionResourceVars.get(sessionId);
+            IntVar lecturerVar = sessionLecturerVars.get(sessionId);
+            
+            // Check if all variables are present
+            if (dayVar == null || hourVar == null || resourceVar == null || lecturerVar == null) {
+                Log.w(TAG, "Missing variables for session " + sessionId);
+                continue;
+            }
+            
+            try {
+                // Extract values from solution using solution.getIntVal() instead of getValue()
+                int dayValue = solution.getIntVal(dayVar);
+                int hourValue = solution.getIntVal(hourVar);
+                int resourceValue = solution.getIntVal(resourceVar);
+                int lecturerValue = solution.getIntVal(lecturerVar);
+                
+                // Use direct array access instead of indexOf
+                Resource resource = (resourceValue >= 0 && resourceValue < resources.size()) 
+                    ? resources.get(resourceValue) : null;
+                
+                Lecturer lecturer = (lecturerValue >= 0 && lecturerValue < lecturers.size()) 
+                    ? lecturers.get(lecturerValue) : null;
+                
+                // Log warning if resource or lecturer is null
+                if (resource == null) {
+                    Log.w(TAG, "Resource not found for value " + resourceValue + " (out of " + 
+                          resources.size() + " resources)");
+                }
+                
+                if (lecturer == null) {
+                    Log.w(TAG, "Lecturer not found for value " + lecturerValue + " (out of " + 
+                          lecturers.size() + " lecturers)");
+                }
+                
+                // Find the corresponding resource and lecturer
+                // Resource resource = null;
+                // for (Resource r : resources) {
+                //     if (resources.indexOf(r) == resourceValue) {
+                //         resource = r;
+                //         break;
+                //     }
+                // }
+                
+                // Lecturer lecturer = null;
+                // for (Lecturer l : lecturers) {
+                //     if (lecturers.indexOf(l) == lecturerValue) {
+                //         lecturer = l;
+                //         break;
+                //     }
+                // }
+                
+                // Create timetable entry
+                if (resource != null && lecturer != null) {
+                    TimetableSession timetableSession = new TimetableSession();
+                    timetableSession.setId(UUID.randomUUID().toString());
+                    timetableSession.setCourseId(session.getCourse().getId());
+                    timetableSession.setCourseName(session.getCourse().getName());
+                    timetableSession.setSessionType(session.getCourse().getCode() != null ? session.getCourse().getCode() : "LECTURE");
+                    
+                    // Set day, hour, resource, and lecturer
+                    String dayOfWeek = DAYS_OF_WEEK[dayValue];
+                    int startHour = START_HOUR + hourValue;
+                    String startTime = String.format("%02d:00", startHour);
+                    String endTime = String.format("%02d:00", startHour + 1);
+                    
+                    timetableSession.setDayOfWeek(dayOfWeek);
+                    timetableSession.setStartTime(startTime);
+                    timetableSession.setEndTime(endTime);
+                    
+                    timetableSession.setResourceId(resource.getId());
+                    timetableSession.setResourceName(resource.getName());
+                    timetableSession.setLecturerId(lecturer.getId());
+                    timetableSession.setLecturerName(lecturer.getName());
+                    
+                    timetable.addSession(timetableSession);
+                    Log.d(TAG, "Added entry for " + session.getCourse().getName() + " on day " + dayValue + " at hour " + hourValue);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error accessing solution value for session " + sessionId, e);
+            }
+        }
+        
+        // Track which courses were successfully scheduled
+        Set<String> scheduledCourses = new HashSet<>();
+        for (TimetableSession entry : timetable.getSessions()) {
+            scheduledCourses.add(entry.getCourseId());
+        }
+        
+        // Verify all courses are scheduled
+        for (Course course : validCourses) {
+            if (!scheduledCourses.contains(course.getId())) {
+                Log.w(TAG, "Course not scheduled by solver: " + course.getName() + " (ID: " + course.getId() + ")");
+                addManualSessionsForCourse(course, resources, lecturers, timetable);
+            }
+        }
+        
+        return timetable;
+    }
+
+    private List<Integer> findCompatibleResources(Course course, List<Resource> resources) {
+        List<Integer> compatibleResourceIndices = new ArrayList<>();
+        
+        String requiredRoomType = course.getRequiredRoomType();
+        String courseName = course.getName();
+        
+        Log.d(TAG, "Finding compatible resources for course: " + courseName + " (Type: " + requiredRoomType + ")");
+        
+        for (int j = 0; j < resources.size(); j++) {
+            Resource resource = resources.get(j);
+            String resourceType = resource.getType();
+            
+            // Log resource details for debugging
+            Log.d(TAG, "Checking resource: " + resource.getName() + " (Type: " + resourceType + ")");
+            
+            // Always add resource if no room type is specified
+            if (requiredRoomType == null || requiredRoomType.isEmpty()) {
+                compatibleResourceIndices.add(j);
+                Log.d(TAG, "Added resource (no room type specified)");
+                continue;
+            }
+            
+            // Handle LAB requirement
+            if (requiredRoomType.equals("LAB")) {
+                if (resourceType != null && resourceType.contains("LAB")) {
+                    compatibleResourceIndices.add(j);
+                    Log.d(TAG, "Added LAB resource: " + resource.getName());
+                }
+            }
+            // Handle LECTURE_HALL requirement
+            else if (requiredRoomType.equals("LECTURE_HALL")) {
+                if (resourceType != null && 
+                    (resourceType.contains("HALL") || resourceType.contains("ROOM"))) {
+                    compatibleResourceIndices.add(j);
+                    Log.d(TAG, "Added LECTURE_HALL resource: " + resource.getName());
+                }
+            }
+            // Handle any other room type requirements
+            else {
+                if (resourceType != null && resourceType.contains(requiredRoomType)) {
+                    compatibleResourceIndices.add(j);
+                    Log.d(TAG, "Added custom type resource: " + resource.getName());
+                }
+            }
+        }
+        
+        // If no resources were found, log a warning and use all resources
+        if (compatibleResourceIndices.isEmpty()) {
+            Log.w(TAG, "No compatible resources found for course: " + courseName + 
+                 ". Using all available resources as fallback.");
+            for (int j = 0; j < resources.size(); j++) {
+                compatibleResourceIndices.add(j);
+            }
+        }
+        
+        Log.d(TAG, "Found " + compatibleResourceIndices.size() + " compatible resources for course: " + courseName);
+        
+        return compatibleResourceIndices;
+    }
+
+    private Timetable createManualTimetable(List<Course> courses, List<Resource> resources, List<Lecturer> lecturers) {
+        Timetable manualTimetable = new Timetable();
+        
+        // Schedule each course manually
+        int dayIndex = 0;
+        int hourIndex = 0;
+        
+        for (Course course : courses) {
+            try {
+                int requiredSessions = Math.max(1, course.getRequiredSessionsPerWeek());
+                
+                for (int i = 0; i < requiredSessions; i++) {
+                    // Create manual session
+                    TimetableSession manualSession = new TimetableSession();
+                    manualSession.setId(UUID.randomUUID().toString());
+                    manualSession.setCourseId(course.getId());
+                    manualSession.setCourseName(course.getName());
+                    manualSession.setSessionType(course.getCode() != null ? course.getCode() : "LECTURE");
+                    
+                    // Use simple round-robin assignment
+                    String dayOfWeek = DAYS_OF_WEEK[dayIndex];
+                    int startHour = START_HOUR + hourIndex;
+                    String startTime = String.format("%02d:00", startHour);
+                    String endTime = String.format("%02d:00", startHour + 1);
+                    
+                    manualSession.setDayOfWeek(dayOfWeek);
+                    manualSession.setStartTime(startTime);
+                    manualSession.setEndTime(endTime);
+                    
+                    // Assign resource and lecturer
+                    Resource resource = resources.isEmpty() ? null : resources.get(0);
+                    Lecturer lecturer = lecturers.isEmpty() ? null : lecturers.get(0);
+                    
+                    manualSession.setResourceId(resource != null ? resource.getId() : "default-resource-id");
+                    manualSession.setResourceName(resource != null ? resource.getName() : "Default Resource");
+                    manualSession.setLecturerId(lecturer != null ? lecturer.getId() : "default-lecturer-id");
+                    manualSession.setLecturerName(lecturer != null ? lecturer.getName() : "Default Lecturer");
+                    
+                    manualTimetable.addSession(manualSession);
+                    
+                    // Update indices for next session
+                    hourIndex = (hourIndex + 1) % HOURS_PER_DAY;
+                    if (hourIndex == 0) {
+                        dayIndex = (dayIndex + 1) % DAYS_PER_WEEK;
+                    }
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error in manual scheduling for course: " + course.getName(), e);
+            }
+        }
+        
+        Log.d(TAG, "Created manual timetable with " + manualTimetable.getSessions().size() + " sessions");
+        return manualTimetable;
+    }
+
+    private void addConstraints(Model model, List<SessionToSchedule> allSessions, 
+                                Map<Integer, IntVar> sessionDayVars, 
+                                Map<Integer, IntVar> sessionHourVars, 
+                                Map<Integer, IntVar> sessionResourceVars, 
+                                Map<Integer, IntVar> sessionLecturerVars) {
+        // CONSTRAINT: No resource can be used by more than one session at the same time
+        for (int i = 0; i < allSessions.size(); i++) {
+            SessionToSchedule sessionI = allSessions.get(i);
+            for (int j = i + 1; j < allSessions.size(); j++) {
+                SessionToSchedule sessionJ = allSessions.get(j);
+                
+                // If sessions are on the same day, at the same hour, they can't use the same resource
+                model.ifThen(
+                    model.and(
+                        model.arithm(sessionDayVars.get(sessionI.getIndex()), "=", sessionDayVars.get(sessionJ.getIndex())),
+                        model.arithm(sessionHourVars.get(sessionI.getIndex()), "=", sessionHourVars.get(sessionJ.getIndex()))
+                    ),
+                    model.arithm(sessionResourceVars.get(sessionI.getIndex()), "!=", sessionResourceVars.get(sessionJ.getIndex()))
+                );
+            }
+        }
+        
+        // CONSTRAINT: No lecturer can teach more than one class at the same time
+        for (int i = 0; i < allSessions.size(); i++) {
+            SessionToSchedule sessionI = allSessions.get(i);
+            for (int j = i + 1; j < allSessions.size(); j++) {
+                SessionToSchedule sessionJ = allSessions.get(j);
+                
+                // If sessions are on the same day, at the same hour, they can't have the same lecturer
+                model.ifThen(
+                    model.and(
+                        model.arithm(sessionDayVars.get(sessionI.getIndex()), "=", sessionDayVars.get(sessionJ.getIndex())),
+                        model.arithm(sessionHourVars.get(sessionI.getIndex()), "=", sessionHourVars.get(sessionJ.getIndex()))
+                    ),
+                    model.arithm(sessionLecturerVars.get(sessionI.getIndex()), "!=", sessionLecturerVars.get(sessionJ.getIndex()))
+                );
+            }
+        }
+    }
+
+    /**
+     * Helper method to get all IntVar variables from the model
+     */
+    private IntVar[] getIntVars(Model model) {
+        Variable[] variables = model.getVars();
+        List<IntVar> intVars = new ArrayList<>();
+        
+        for (Variable var : variables) {
+            if (var instanceof IntVar) {
+                intVars.add((IntVar) var);
+            }
+        }
+        
+        return intVars.toArray(new IntVar[0]);
+    }
+
+    @Override
+    public boolean hasConflicts(Timetable timetable) {
+        // Simple check for resource and lecturer conflicts
+        Map<String, Set<String>> resourceTimeSlots = new HashMap<>();
+        Map<String, Set<String>> lecturerTimeSlots = new HashMap<>();
+        
+        for (TimetableSession session : timetable.getSessions()) {
+            String timeSlot = session.getDayOfWeek() + "-" + session.getStartTime();
+            
+            // Check for resource conflicts
+            String resourceId = session.getResourceId();
+            Set<String> resourceSlots = resourceTimeSlots.computeIfAbsent(resourceId, k -> new HashSet<>());
+            if (resourceSlots.contains(timeSlot)) {
+                Log.w(TAG, "Resource conflict detected: " + session.getResourceName() + " on " + 
+                      session.getDayOfWeek() + " at " + session.getStartTime());
+                return true;
+            }
+            resourceSlots.add(timeSlot);
+            
+            // Check for lecturer conflicts
+            String lecturerId = session.getLecturerId();
+            Set<String> lecturerSlots = lecturerTimeSlots.computeIfAbsent(lecturerId, k -> new HashSet<>());
+            if (lecturerSlots.contains(timeSlot)) {
+                Log.w(TAG, "Lecturer conflict detected: " + session.getLecturerName() + " on " + 
+                      session.getDayOfWeek() + " at " + session.getStartTime());
+                return true;
+            }
+            lecturerSlots.add(timeSlot);
+        }
+        
+        return false;
+    }
+
+    private void addManualSessionsForCourse(Course course, List<Resource> resources, List<Lecturer> lecturers, Timetable timetable) {
+        Log.d(TAG, "Manually adding sessions for course: " + course.getName() + " (ID: " + course.getId() + 
+              "), needs " + course.getRequiredSessionsPerWeek() + " sessions");
+        
+        // Find a suitable resource and lecturer
+        Resource selectedResource = null;
+        Lecturer selectedLecturer = null;
+        
+        // Find a resource with matching type if available
+        String requiredType = "LECTURE_HALL"; // Default to lecture hall
+        if (course.getCode() != null && course.getCode().contains("LAB")) {
+            requiredType = "LAB";
+        }
+        
+        // Try to find a compatible resource
+        for (Resource resource : resources) {
+            if (resource.getType() != null && resource.getType().equalsIgnoreCase(requiredType)) {
+                selectedResource = resource;
+                Log.d(TAG, "Found matching resource: " + resource.getName() + " (Type: " + resource.getType() + ")");
+                break;
+            }
+        }
+        
+        // If no matching resource was found, use the first one
+        if (selectedResource == null && !resources.isEmpty()) {
+            selectedResource = resources.get(0);
+            Log.d(TAG, "Using fallback resource: " + selectedResource.getName());
+        }
+        
+        // Use the first lecturer
+        if (!lecturers.isEmpty()) {
+            selectedLecturer = lecturers.get(0);
+            Log.d(TAG, "Using lecturer: " + selectedLecturer.getName());
+        }
+        
+        // Check if we have the minimum requirements
+        if (selectedResource == null || selectedLecturer == null) {
+            Log.e(TAG, "Cannot manually schedule course " + course.getName() + " - no resources or lecturers available");
+            return;
+        }
+        
+        // Make sure we schedule the correct number of sessions
+        int sessionsToSchedule = Math.max(1, course.getRequiredSessionsPerWeek());
+        int sessionsScheduled = 0;
+        
+        Log.d(TAG, "Attempting to schedule " + sessionsToSchedule + " sessions for " + course.getName());
+        
+        // Find a free slot for the course
+        // Start with Monday at 8 AM and try each day/hour combination
+        boolean slotFound = false;
+        
+        // Try each day and hour until a free slot is found
+        for (int day = 0; day < DAYS_OF_WEEK.length && !slotFound; day++) {
+            for (int hour = 0; hour < 10 && !slotFound; hour++) {
+                // Check if this slot is free for the resource and lecturer
+                boolean slotIsFree = true;
+                
+                for (TimetableSession existingSession : timetable.getSessions()) {
+                    String dayOfWeek = DAYS_OF_WEEK[day];
+                    int startHour = START_HOUR + hour;
+                    String startTime = String.format("%02d:00", startHour);
+                    
+                    if (existingSession.getDayOfWeek().equals(dayOfWeek) && 
+                        existingSession.getStartTime().equals(startTime)) {
+                        // Check if resource or lecturer is busy
+                        if (existingSession.getResourceId().equals(selectedResource.getId()) ||
+                            existingSession.getLecturerId().equals(selectedLecturer.getId())) {
+                            slotIsFree = false;
+                            break;
+                        }
+                    }
+                }
+                
+                // If slot is free, create a session
+                if (slotIsFree) {
+                    // Create session
+                    TimetableSession timetableSession = new TimetableSession();
+                    timetableSession.setId(UUID.randomUUID().toString());
+                    timetableSession.setCourseId(course.getId());
+                    timetableSession.setCourseName(course.getName());
+                    timetableSession.setSessionType(course.getCode() != null ? course.getCode() : "LECTURE");
+                    
+                    // Set day, hour, resource, and lecturer
+                    String dayOfWeek = DAYS_OF_WEEK[day];
+                    int startHour = START_HOUR + hour;
+                    String startTime = String.format("%02d:00", startHour);
+                    String endTime = String.format("%02d:00", startHour + 1);
+                    
+                    timetableSession.setDayOfWeek(dayOfWeek);
+                    timetableSession.setStartTime(startTime);
+                    timetableSession.setEndTime(endTime);
+                    
+                    timetableSession.setResourceId(selectedResource.getId());
+                    timetableSession.setResourceName(selectedResource.getName());
+                    timetableSession.setLecturerId(selectedLecturer.getId());
+                    timetableSession.setLecturerName(selectedLecturer.getName());
+                    
+                    timetable.addSession(timetableSession);
+                    
+                    Log.d(TAG, "Manually scheduled " + course.getName() + " on " + dayOfWeek + " at " + startTime);
+                    slotFound = true;
+                    sessionsScheduled++;
+                    
+                    // Check if we've scheduled enough sessions
+                    if (sessionsScheduled >= sessionsToSchedule) {
+                        Log.d(TAG, "Successfully scheduled all " + sessionsScheduled + " required sessions for " + course.getName());
+                        return;
+                    }
+                }
+            }
+        }
+        
+        // If we couldn't find slots for all required sessions, force schedule them
+        if (sessionsScheduled < sessionsToSchedule) {
+            Log.w(TAG, "Could only schedule " + sessionsScheduled + " out of " + sessionsToSchedule + 
+                  " sessions for " + course.getName() + " - adding remaining sessions with potential conflicts");
+            
+            // Schedule remaining sessions
+            for (int i = sessionsScheduled; i < sessionsToSchedule; i++) {
+                // Create session without checking for conflicts
+                TimetableSession timetableSession = new TimetableSession();
+                timetableSession.setId(UUID.randomUUID().toString());
+                timetableSession.setCourseId(course.getId());
+                timetableSession.setCourseName(course.getName());
+                timetableSession.setSessionType(course.getCode() != null ? course.getCode() : "LECTURE");
+                
+                // Set to Monday at 8 AM by default, offset by the session number to avoid all at same time
+                int dayIndex = i % DAYS_OF_WEEK.length;
+                int hourIndex = (i / DAYS_OF_WEEK.length) % 8; // Spread across 8 hours
+                
+                timetableSession.setDayOfWeek(DAYS_OF_WEEK[dayIndex]);
+                timetableSession.setStartTime(String.format("%02d:00", START_HOUR + hourIndex));
+                timetableSession.setEndTime(String.format("%02d:00", START_HOUR + hourIndex + 1));
+                
+                timetableSession.setResourceId(selectedResource.getId());
+                timetableSession.setResourceName(selectedResource.getName());
+                timetableSession.setLecturerId(selectedLecturer.getId());
+                timetableSession.setLecturerName(selectedLecturer.getName());
+                
+                timetable.addSession(timetableSession);
+                
+                Log.d(TAG, "Force scheduled " + course.getName() + " session " + (i+1) + " on " + 
+                      DAYS_OF_WEEK[dayIndex] + " at " + (START_HOUR + hourIndex) + ":00");
+            }
+        }
+    }
+
+    private static class SessionToSchedule {
+        private final int index;
+        private final Course course;
+        
+        public SessionToSchedule(int index, Course course) {
+            this.index = index;
+            this.course = course;
+        }
+        
+        public int getIndex() {
+            return index;
+        }
+        
+        public Course getCourse() {
+            return course;
+        }
+    }
+}

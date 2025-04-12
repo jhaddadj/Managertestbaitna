@@ -1,0 +1,7 @@
+<!-- res/drawable/custom_drawable.xml -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+
+    <!-- Add the image on top of the shape -->
+    <item android:drawable="@drawable/back" android:gravity="center" />
+</layer-list>

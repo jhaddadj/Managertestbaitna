@@ -1,0 +1,37 @@
+<resources>
+    <string name="app_name">Manager</string>
+    <string name="register">Registration</string>
+    <string name="name">Name\n</string>
+    <string name="password">Password\n</string>
+    <string name="email">Email\n</string>
+    <string name="create_account">Create Account</string>
+    <string name="countinue_as_a">Countinue as a</string>
+    <string name="lecturar">Lecturar</string>
+    <string name="admin">Admin</string>
+    <string name="student_registration">Student Registration</string>
+    <string name="lecturauar_registration">Lecturauar Registration</string>
+    <string name="admin_registration">Admin Registration</string>
+    <!-- TODO: Remove or change this placeholder text -->
+    <string name="hello_blank_fragment">Hello blank fragment</string>
+    <string name="login">Login</string>
+    <string name="don_t_have_an_account_register">Don\'t have an account? Register</string>
+    <string name="forgot_password">Forget password</string>
+    <string name="enter_email">Enter your email to recover your password</string>
+    <string name="send_recovery_email">Send Recovery Email</string>
+    <string name="title_home">Home</string>
+    <string name="title_dashboard">Dashboard</string>
+    <string name="title_notifications">Notifications</string>
+    <string name="dummy_button">Dummy Button</string>
+    <string name="dummy_content">DUMMY\nCONTENT</string>
+    
+    <!-- Solver descriptions -->
+    <string name="simple_solver_name">Simple Solver</string>
+    <string name="choco_solver_name">Choco Solver</string>
+    <string name="simple_solver_desc">Fast greedy algorithm that works on all devices. May produce sub-optimal solutions.</string>
+    <string name="choco_solver_desc">Advanced constraint programming that finds optimal solutions. May be slower but produces better timetables.</string>
+    <string name="solver_selection_title">Solver Type:</string>
+    <string-array name="resource_types">
+        <item>Room</item>
+        <item>Facility</item>
+    </string-array>
+</resources>
