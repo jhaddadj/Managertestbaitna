@@ -433,3 +433,4 @@ public class DepartmentTimetablesActivity extends AppCompatActivity {
         }
     }
 }
+//test everything downloaded ?
