@@ -48,14 +48,19 @@ public class SimpleTimetableGenerator implements TimetableGenerator {
         
         // Apply options
         this.avoidBackToBackClasses = options.shouldAvoidBackToBackClasses();
+        boolean avoidBackToBackStudentsClasses = options.shouldAvoidBackToBackStudents();
         this.preferEvenDistribution = options.shouldPreferEvenDistribution();
         this.spreadCourseSessions = options.shouldSpreadCourseSessions();
-        this.maxHoursPerDay = options.getMaxHoursPerDay();
         
-        Log.d(TAG, "Using options: avoidBackToBack=" + avoidBackToBackClasses + 
-              ", preferEvenDistribution=" + preferEvenDistribution + 
-              ", spreadCourseSessions=" + spreadCourseSessions +
-              ", maxHoursPerDay=" + maxHoursPerDay);
+        if (options.getMaxHoursPerDay() > 0) {
+            this.maxHoursPerDay = options.getMaxHoursPerDay();
+        }
+        
+        Log.d(TAG, "Options: avoidBackToBack=" + this.avoidBackToBackClasses + 
+              ", avoidBackToBackStudents=" + avoidBackToBackStudentsClasses +
+              ", preferEvenDistribution=" + this.preferEvenDistribution +
+              ", spreadCourseSessions=" + this.spreadCourseSessions +
+              ", maxHoursPerDay=" + this.maxHoursPerDay);
         
         // Create a new timetable
         Timetable timetable = new Timetable();
@@ -99,6 +104,12 @@ public class SimpleTimetableGenerator implements TimetableGenerator {
         
         // Use filtered resources for the rest of the generation process
         resources = filteredResources;
+        
+        // Create a lookup map for resources by ID to match assigned resources
+        Map<String, Resource> resourceMap = new HashMap<>();
+        for (Resource resource : resources) {
+            resourceMap.put(resource.getId(), resource);
+        }
         
         // Resource availability: resource index -> day -> hour -> available?
         boolean[][][] resourceAvailability = new boolean[resources.size()][DAYS_PER_WEEK][HOURS_PER_DAY];
@@ -386,7 +397,6 @@ public class SimpleTimetableGenerator implements TimetableGenerator {
                 Collections.shuffle(suitableResources, random);
                 Collections.shuffle(suitableLecturers, random);
                 
-                int resourceIndex = suitableResources.get(0);
                 int lecturerIndex = suitableLecturers.get(0);
                 
                 // For even distribution, randomize the order of days
@@ -396,7 +406,7 @@ public class SimpleTimetableGenerator implements TimetableGenerator {
                 }
                 
                 // If we want to spread course sessions across days
-                if (spreadCourseSessions) {
+                if (this.spreadCourseSessions) {
                     // Get days that already have sessions for this course
                     Set<Integer> daysWithSessions = courseDayAllocation.get(courseId);
                     
@@ -437,7 +447,7 @@ public class SimpleTimetableGenerator implements TimetableGenerator {
                     Log.d(TAG, "Applying spread course sessions constraint for " + courseName);
                 } 
                 // If prefer even distribution, shuffle the days to avoid clustering
-                else if (preferEvenDistribution) {
+                else if (this.preferEvenDistribution) {
                     Collections.shuffle(dayOrder, random);
                     Log.d(TAG, "Applying even distribution constraint - randomizing day order");
                 }
@@ -462,9 +472,9 @@ public class SimpleTimetableGenerator implements TimetableGenerator {
                     int d = dayOrder.get(dayIndex);
                     
                     // If respecting max hours constraint, skip days where lecturer already has maximum hours
-                    if (lecturerHoursPerDay[d] >= maxHoursPerDay) {
+                    if (lecturerHoursPerDay[d] >= this.maxHoursPerDay) {
                         Log.d(TAG, "Skipping day " + DAYS_OF_WEEK[d] + " - lecturer already has " + 
-                              lecturerHoursPerDay[d] + " hours (max: " + maxHoursPerDay + ")");
+                              lecturerHoursPerDay[d] + " hours (max: " + this.maxHoursPerDay + ")");
                         continue;
                     }
                     
@@ -474,7 +484,7 @@ public class SimpleTimetableGenerator implements TimetableGenerator {
                         hourOrder.add(h);
                     }
                     
-                    if (avoidBackToBackClasses) {
+                    if (this.avoidBackToBackClasses) {
                         Log.d(TAG, "Applying back-to-back avoidance constraint");
                         // First sort the hours to prefer those that don't create back-to-back classes
                         Collections.sort(hourOrder, (hour1, hour2) -> {
@@ -502,10 +512,44 @@ public class SimpleTimetableGenerator implements TimetableGenerator {
                     for (int hourIndex = 0; !sessionAllocated && hourIndex < hourOrder.size(); hourIndex++) {
                         int h = hourOrder.get(hourIndex);
                         
+                        // Find available resource
+                        int resourceIndex = -1;
+                        
+                        // Check if course has an assigned resource and prioritize it
+                        if (course.getAssignedResourceId() != null && !course.getAssignedResourceId().isEmpty()) {
+                            String assignedResourceId = course.getAssignedResourceId();
+                            // Find the assigned resource in our resources list
+                            for (int r = 0; r < resources.size(); r++) {
+                                if (resources.get(r).getId().equals(assignedResourceId)) {
+                                    // Check if this assigned resource is available at this time slot
+                                    if (resourceAvailability[r][d][h]) {
+                                        resourceIndex = r;
+                                        Log.d(TAG, "Using assigned resource " + resources.get(r).getName() + 
+                                              " (ID: " + assignedResourceId + ") for course " + course.getName());
+                                        break;
+                                    } else {
+                                        Log.d(TAG, "Assigned resource " + resources.get(r).getName() + 
+                                              " is not available at this time slot for course " + course.getName());
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // If no assigned resource or assigned resource not available, find any available resource
+                        if (resourceIndex == -1) {
+                            for (int r = 0; r < resources.size(); r++) {
+                                if (resourceAvailability[r][d][h]) {
+                                    resourceIndex = r;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        // Check if lecturer is available
+                        boolean lecturerAvailable = lecturerAvailability[lecturerIndex][d][h];
+                        
                         // Check if slot is available
-                        if (h < HOURS_PER_DAY && 
-                            resourceAvailability[resourceIndex][d][h] && 
-                            lecturerAvailability[lecturerIndex][d][h]) {
+                        if (h < HOURS_PER_DAY && resourceIndex != -1 && lecturerAvailable) {
                             
                             // Create a unique ID for this session
                             String sessionId = UUID.randomUUID().toString();
@@ -540,8 +584,8 @@ public class SimpleTimetableGenerator implements TimetableGenerator {
                                    " at " + (START_HOUR + h) + ":00" +
                                    " with " + lecturers.get(lecturerIndex).getName() +
                                    " in " + resources.get(resourceIndex).getName() +
-                                   " (constraints: back-to-back=" + avoidBackToBackClasses + 
-                                   ", even-distribution=" + preferEvenDistribution + ")");
+                                   " (constraints: back-to-back=" + this.avoidBackToBackClasses + 
+                                   ", even-distribution=" + this.preferEvenDistribution + ")");
                             
                             sessionAllocated = true;
                             sessionsScheduled++;

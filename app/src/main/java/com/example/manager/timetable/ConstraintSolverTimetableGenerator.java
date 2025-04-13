@@ -34,7 +34,9 @@ public class ConstraintSolverTimetableGenerator implements TimetableGenerator {
                                      List<Course> courses, TimetableGeneratorOptions options) {
         Log.d(TAG, "Delegating timetable generation to SimpleTimetableGenerator");
         Log.d(TAG, "Options: avoidBackToBack=" + options.shouldAvoidBackToBackClasses() + 
+              ", avoidBackToBackStudents=" + options.shouldAvoidBackToBackStudents() +
               ", preferEvenDistribution=" + options.shouldPreferEvenDistribution() + 
+              ", spreadCourseSessions=" + options.shouldSpreadCourseSessions() +
               ", maxHoursPerDay=" + options.getMaxHoursPerDay());
         
         // Delegate to SimpleTimetableGenerator implementation

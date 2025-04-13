@@ -496,6 +496,12 @@ public class ChocoSolverTimetableGenerator implements TimetableGenerator {
             scheduledSessionsPerCourse.put(course.getId(), 0);
         }
         
+        // Prepare resource lookup map for easier matching
+        Map<String, Resource> resourceMap = new HashMap<>();
+        for (Resource resource : resources) {
+            resourceMap.put(resource.getId(), resource);
+        }
+        
         // Process each session to create timetable entries
         for (SessionToSchedule session : allSessions) {
             int sessionId = session.getIndex();
@@ -530,18 +536,46 @@ public class ChocoSolverTimetableGenerator implements TimetableGenerator {
                 Resource resource;
                 Lecturer lecturer; 
                 
+                // Check if the course has an assigned resource - if so, use it instead of solver assignment
+                if (course.getAssignedResourceId() != null && !course.getAssignedResourceId().isEmpty()) {
+                    String assignedResourceId = course.getAssignedResourceId();
+                    // Look up the assigned resource by ID
+                    resource = resourceMap.get(assignedResourceId);
+                    
+                    if (resource != null) {
+                        Log.d(TAG, "Using manually assigned resource for course " + course.getName() + 
+                              ": " + resource.getName() + " (ID: " + assignedResourceId + ")");
+                    } else {
+                        // Fallback to index-based resource if assigned resource not found
+                        Log.w(TAG, "Assigned resource ID " + assignedResourceId + " not found for course " + 
+                              course.getName() + " - falling back to solver assignment");
+                        
+                        if (missingValues) {
+                            resource = resources.isEmpty() ? null : resources.get(0);
+                        } else {
+                            resourceValue = Math.min(resourceValue, resources.size() - 1);
+                            resource = resources.get(resourceValue);
+                        }
+                    }
+                } else {
+                    // No assigned resource, use solver assignment
+                    if (missingValues) {
+                        resource = resources.isEmpty() ? null : resources.get(0);
+                    } else {
+                        resourceValue = Math.min(resourceValue, resources.size() - 1);
+                        resource = resources.get(resourceValue);
+                    }
+                }
+                
                 if (missingValues) {
                     // Use fallback values if any are missing
                     int currentCount = scheduledSessionsPerCourse.getOrDefault(course.getId(), 0);
                     dayValue = currentCount % DAYS_PER_WEEK;
                     hourValue = (currentCount / DAYS_PER_WEEK) % HOURS_PER_DAY;
-                    resource = resources.isEmpty() ? null : resources.get(0);
                     lecturer = lecturers.isEmpty() ? null : lecturers.get(0);
                 } else {
                     // Make sure indices are within bounds
-                    resourceValue = Math.min(resourceValue, resources.size() - 1);
                     lecturerValue = Math.min(lecturerValue, lecturers.size() - 1);
-                    resource = resources.get(resourceValue);
                     lecturer = lecturers.get(lecturerValue);
                 }
                 
@@ -563,8 +597,10 @@ public class ChocoSolverTimetableGenerator implements TimetableGenerator {
                     timetableSession.setStartTime(startTime);
                     timetableSession.setEndTime(endTime);
                     
+                    // Set resource ID and name from the same resource object to ensure consistency
                     timetableSession.setResourceId(resource.getId());
                     timetableSession.setResourceName(resource.getName());
+                    
                     timetableSession.setLecturerId(lecturer.getId());
                     timetableSession.setLecturerName(lecturer.getName());
                     
@@ -575,7 +611,8 @@ public class ChocoSolverTimetableGenerator implements TimetableGenerator {
                     scheduledSessionsPerCourse.put(course.getId(), currentCount + 1);
                     
                     Log.d(TAG, "Added entry for " + course.getName() + " on day " + dayValue + 
-                          " at hour " + hourValue + " (session " + (currentCount + 1) + 
+                          " at hour " + hourValue + " with resource " + resource.getName() +
+                          " (ID: " + resource.getId() + ")" + " (session " + (currentCount + 1) + 
                           " of " + course.getRequiredSessionsPerWeek() + ")");
                 }
             } catch (Exception e) {

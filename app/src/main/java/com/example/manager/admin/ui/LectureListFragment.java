@@ -103,7 +103,7 @@ public class LectureListFragment extends Fragment {
 
                         for (DataSnapshot dataSnapshot : snapshot.getChildren()) {
                             User user = dataSnapshot.getValue(User.class);
-                            if (user != null && "lecture".equals(user.getRole())) {
+                            if (user != null && ("lecturer".equals(user.getRole()) || "lecture".equals(user.getRole()))) {
                                 pendingUsers.add(user);
                             }
                         }

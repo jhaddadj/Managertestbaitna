@@ -195,7 +195,7 @@ public class LoginActivity extends AppCompatActivity {
                             FirebaseAuth.getInstance().signOut();
 
                         }
-                    } else if ("lecture".equals(role)) {
+                    } else if ("lecture".equals(role) || "lecturer".equals(role)) {
                         if ("2".equals(roles)) {
                             // Role matches selected interface (lecturer)
                             redirectToLecturer();
@@ -255,7 +255,7 @@ public class LoginActivity extends AppCompatActivity {
         if ("1".equals(roles)) {
             userRole = "admin";
         } else if ("2".equals(roles)) {
-            userRole = "lecture";
+            userRole = "lecturer";
         } else if ("3".equals(roles)) {
             userRole = "student";
         } else {
@@ -288,7 +288,7 @@ public class LoginActivity extends AppCompatActivity {
                     "Profile has been restored. Welcome back!", Toast.LENGTH_SHORT).show();
                 
                 // Also recreate department data if this is a student or lecturer
-                if ("lecture".equals(userRole) && "2".equals(finalRoles)) {
+                if ("lecturer".equals(userRole) && "2".equals(finalRoles)) {
                     // For lecturers, recreate with a default department
                     DatabaseReference deptRef = FirebaseDatabase.getInstance()
                             .getReference("lecturer_departments").child(userId);

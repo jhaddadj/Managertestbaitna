@@ -3,6 +3,7 @@ package com.example.manager.lecturar.ui;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.os.Bundle;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -110,7 +111,74 @@ public class HomeFragment extends Fragment {
         if (binding != null) {
             binding.progressBar.setVisibility(View.VISIBLE);
         }
-
+        
+        // Check if consolidated timetable exists first, then fall back to multi-department lookup
+        DatabaseReference consolidatedRef = FirebaseDatabase.getInstance().getReference()
+                .child("lecturer_timetables").child(userId);
+        
+        consolidatedRef.addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(@NonNull DataSnapshot dataSnapshot) {
+                if (dataSnapshot.exists() && dataSnapshot.getChildrenCount() > 0) {
+                    // Consolidated timetable exists, use it directly
+                    Log.d("HomeFragment", "Using consolidated timetable for lecturer: " + userId);
+                    
+                    // Get lecturer name for display
+                    databaseReferenceUser.child(userId).addListenerForSingleValueEvent(new ValueEventListener() {
+                        @Override
+                        public void onDataChange(@NonNull DataSnapshot snapshot) {
+                            String lecturerName = "";
+                            if (snapshot.exists() && snapshot.hasChild("name")) {
+                                lecturerName = snapshot.child("name").getValue(String.class);
+                            }
+                            
+                            // Launch the view with the consolidated flag
+                            Intent intent = new Intent(getActivity(), ViewTimetableActivity.class);
+                            intent.putExtra("lecturerId", userId);
+                            intent.putExtra("useConsolidatedTimetable", true);
+                            if (lecturerName != null && !lecturerName.isEmpty()) {
+                                intent.putExtra("lecturerName", lecturerName);
+                            }
+                            
+                            if (binding != null) {
+                                binding.progressBar.setVisibility(View.GONE);
+                            }
+                            startActivity(intent);
+                        }
+                        
+                        @Override
+                        public void onCancelled(@NonNull DatabaseError error) {
+                            // Still start the activity even without the name
+                            Intent intent = new Intent(getActivity(), ViewTimetableActivity.class);
+                            intent.putExtra("lecturerId", userId);
+                            intent.putExtra("useConsolidatedTimetable", true);
+                            
+                            if (binding != null) {
+                                binding.progressBar.setVisibility(View.GONE);
+                            }
+                            startActivity(intent);
+                        }
+                    });
+                } else {
+                    // Fallback to the original multi-department method
+                    Log.d("HomeFragment", "No consolidated timetable found, falling back to multi-department query");
+                    fetchDepartmentsAndLoadTimetable(userId);
+                }
+            }
+            
+            @Override
+            public void onCancelled(@NonNull DatabaseError error) {
+                // Error accessing consolidated timetable, fall back to original method
+                Log.e("HomeFragment", "Error checking consolidated timetable: " + error.getMessage());
+                fetchDepartmentsAndLoadTimetable(userId);
+            }
+        });
+    }
+    
+    /**
+     * Fetches lecturer department assignments and loads the appropriate timetable
+     */
+    private void fetchDepartmentsAndLoadTimetable(String userId) {
         // First check in the lecturer_departments node for department information
         DatabaseReference lecturerDeptRef = FirebaseDatabase.getInstance()
                 .getReference("lecturer_departments").child(userId);

@@ -25,6 +25,8 @@ import com.google.firebase.database.DatabaseReference;
 import com.google.firebase.database.FirebaseDatabase;
 import com.google.firebase.database.ValueEventListener;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -71,6 +73,76 @@ public class DepartmentTimetablesActivity extends AppCompatActivity {
             Intent intent = new Intent(DepartmentTimetablesActivity.this, UnifiedTimetableGeneratorActivity.class);
             startActivity(intent);
         });
+        
+        setupDepartmentTimetablesView();
+    }
+    
+    private void setupDepartmentTimetablesView() {
+        // Initialize views
+        departmentTimetablesContainer = findViewById(R.id.departmentTimetablesContainer);
+        
+        // Add "View All Departments" button programmatically (after the generate button)
+        Button viewAllDepartmentsButton = new Button(this);
+        viewAllDepartmentsButton.setText("View All Departments Combined");
+        viewAllDepartmentsButton.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        viewAllDepartmentsButton.setPadding(20, 20, 20, 20);
+        viewAllDepartmentsButton.setBackgroundColor(getResources().getColor(android.R.color.holo_green_dark));
+        viewAllDepartmentsButton.setTextColor(getResources().getColor(android.R.color.white));
+        
+        // Set click listener for the "View All Departments" button
+        viewAllDepartmentsButton.setOnClickListener(v -> {
+            // Check if we have at least one department with a timetable
+            boolean hasTimetable = false;
+            for (String timetableId : departmentTimetableIds.values()) {
+                if (timetableId != null && !timetableId.isEmpty()) {
+                    hasTimetable = true;
+                    break;
+                }
+            }
+            
+            if (!hasTimetable) {
+                Toast.makeText(this, "No timetables available. Generate timetables first.", 
+                    Toast.LENGTH_SHORT).show();
+                return;
+            }
+            
+            // Launch the consolidated view with all departments
+            openConsolidatedTimetableView();
+        });
+        
+        // Safety check: first make sure the container isn't empty
+        if (departmentTimetablesContainer.getChildCount() == 0) {
+            // If the container is empty, just add at index 0
+            departmentTimetablesContainer.addView(viewAllDepartmentsButton, 0);
+        } else {
+            // Find the index where to insert the new button (after the "Generate All Department Timetables" button)
+            int insertIndex = 0; // Default to the first position
+            
+            // Iterate through departmentTimetablesContainer children to find the generate button
+            boolean foundGenerateButton = false;
+            for (int i = 0; i < departmentTimetablesContainer.getChildCount(); i++) {
+                View child = departmentTimetablesContainer.getChildAt(i);
+                if (child instanceof Button) {
+                    Button button = (Button) child;
+                    String buttonText = button.getText().toString();
+                    if (buttonText.contains("Generate All Department")) {
+                        insertIndex = i + 1;
+                        foundGenerateButton = true;
+                        break;
+                    }
+                }
+            }
+            
+            // Add the button at the appropriate position
+            if (insertIndex < departmentTimetablesContainer.getChildCount()) {
+                departmentTimetablesContainer.addView(viewAllDepartmentsButton, insertIndex);
+            } else {
+                // If we couldn't find a valid index or it would be out of bounds, add at the end
+                departmentTimetablesContainer.addView(viewAllDepartmentsButton);
+            }
+        }
         
         // Load department timetables
         loadDepartmentTimetables();
@@ -329,13 +401,35 @@ public class DepartmentTimetablesActivity extends AppCompatActivity {
         });
     }
     
+    /**
+     * Opens a consolidated view showing all departments' timetables combined
+     */
+    private void openConsolidatedTimetableView() {
+        Intent intent = new Intent(this, ViewTimetableActivity.class);
+        
+        // Pass all departments to view
+        intent.putExtra("isAllDepartmentsView", true);
+        
+        // Convert departments array to ArrayList for intent
+        ArrayList<String> departmentsList = new ArrayList<>(Arrays.asList(departments));
+        intent.putStringArrayListExtra("allDepartments", departmentsList);
+        
+        // Set flag to show all departments are being viewed
+        intent.putExtra("isMultiDepartment", true);
+        
+        // Set a special title for this view
+        intent.putExtra("customTitle", "All Departments - Consolidated View");
+        
+        startActivity(intent);
+    }
+    
     @Override
     protected void onResume() {
         super.onResume();
         // Reload timetables when returning to this activity
         if (departmentTimetablesContainer != null) {
             departmentTimetablesContainer.removeAllViews();
-            loadDepartmentTimetables();
+            setupDepartmentTimetablesView();
         }
     }
 }

@@ -16,6 +16,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.text.TextUtils;
 import android.util.Log;
@@ -62,7 +63,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.Random;
-// test
+
 /**
  * Activity for viewing a generated timetable
  */
@@ -118,44 +119,69 @@ public class ViewTimetableActivity extends AppCompatActivity {
 
         // Get timetable ID from intent
         timetableId = getIntent().getStringExtra("timetableId");
-        if (timetableId == null) {
-            Toast.makeText(this, "Error: No timetable ID provided", Toast.LENGTH_SHORT).show();
-            finish();
-            return;
-        }
-
+        
+        // Check if we're using the consolidated timetable approach
+        boolean useConsolidatedTimetable = getIntent().getBooleanExtra("useConsolidatedTimetable", false);
+        
+        // Check if we're viewing all departments (admin-only feature)
+        boolean isAllDepartmentsView = getIntent().getBooleanExtra("isAllDepartmentsView", false);
+        
+        // Check if we're viewing the admin master consolidated view
+        boolean isAdminConsolidatedView = getIntent().getBooleanExtra("isAdminConsolidatedView", false);
+        
+        // Get lecturer ID for lecturer-specific viewing
+        String lecturerId = getIntent().getStringExtra("lecturerId");
+        boolean isLecturerView = lecturerId != null && !lecturerId.isEmpty();
+        
         // Get department from intent
         department = getIntent().getStringExtra("department");
         if (department == null) {
             department = "Computer Science"; // Default department if none provided
         }
-
-        // Check if we're in lecturer mode - if so we'll only show their courses
-        String lecturerId = getIntent().getStringExtra("lecturerId");
-        boolean isLecturerView = lecturerId != null && !lecturerId.isEmpty();
-
-        // Check if we have multiple departments to load
+        
+        // If we're not using the consolidated approach and not viewing multiple departments,
+        // ensure that we have a timetable ID
         boolean isMultiDepartment = getIntent().getBooleanExtra("isMultiDepartment", false);
         ArrayList<String> allDepartments = getIntent().getStringArrayListExtra("allDepartments");
+        
+        if (!useConsolidatedTimetable && !isMultiDepartment && !isAllDepartmentsView && !isAdminConsolidatedView && timetableId == null) {
+            Toast.makeText(this, "Error: No timetable ID provided", Toast.LENGTH_SHORT).show();
+            finish();
+            return;
+        }
 
         // Initialize views
         timetableContentLayout = findViewById(R.id.timetableContentLayout);
         emptyView = findViewById(R.id.emptyView);
         titleTextView = findViewById(R.id.titleTextView);
 
-        // Update title to show department
-        if (isLecturerView) {
+        // Update title based on view type
+        String customTitle = getIntent().getStringExtra("customTitle");
+        if (customTitle != null && !customTitle.isEmpty()) {
+            titleTextView.setText(customTitle);
+        } else if (isLecturerView) {
             if (isMultiDepartment && allDepartments != null && allDepartments.size() > 1) {
                 titleTextView.setText("My Teaching Schedule (Multiple Departments)");
             } else {
                 titleTextView.setText("My Teaching Schedule");
             }
+        } else if (isAllDepartmentsView) {
+            titleTextView.setText("All Departments - Consolidated View");
+        } else if (isAdminConsolidatedView) {
+            titleTextView.setText("Master Timetable - All Courses");
         } else {
             titleTextView.setText(department + " Timetable");
         }
 
         // Load timetable data
-        if (isMultiDepartment && allDepartments != null && allDepartments.size() > 0) {
+        if (isAdminConsolidatedView) {
+            // Use the new admin master consolidated view
+            loadAdminMasterConsolidatedTimetable();
+        } else if (useConsolidatedTimetable && lecturerId != null) {
+            loadConsolidatedLecturerTimetable(lecturerId);
+        } else if (isAllDepartmentsView && allDepartments != null && allDepartments.size() > 0) {
+            loadAllDepartmentsTimetable(allDepartments);
+        } else if (isMultiDepartment && allDepartments != null && allDepartments.size() > 0) {
             loadMultiDepartmentTimetable(allDepartments, lecturerId);
         } else {
             loadTimetableSessions(lecturerId);
@@ -163,6 +189,23 @@ public class ViewTimetableActivity extends AppCompatActivity {
 
         // Set up back button
         findViewById(R.id.backButton).setOnClickListener(v -> finish());
+
+        // Set up refresh button for timetable reloading
+        findViewById(R.id.refreshButton).setOnClickListener(v -> {
+            // Clear the current sessions and force reload with fresh data
+            sessions.clear();
+            timetableContentLayout.removeAllViews();
+            
+            if (lecturerId != null && !lecturerId.isEmpty()) {
+                if (isMultiDepartment && allDepartments != null && allDepartments.size() > 0) {
+                    loadMultiDepartmentTimetable(allDepartments, lecturerId);
+                } else {
+                    loadConsolidatedLecturerTimetable(lecturerId);
+                }
+            } else {
+                loadTimetableSessions(null);
+            }
+        });
 
         // Set up download PDF button
         findViewById(R.id.downloadPdfButton).setOnClickListener(v -> createAndDownloadPdf());
@@ -452,50 +495,112 @@ public class ViewTimetableActivity extends AppCompatActivity {
      * Loads timetable data from multiple departments for a lecturer
      */
     private void loadMultiDepartmentTimetable(List<String> departments, String lecturerId) {
-        AtomicInteger pendingDepartments = new AtomicInteger(departments.size());
+        // Count how many departments we need to process
+        final AtomicInteger pendingDepartments = new AtomicInteger(departments.size());
         AtomicBoolean anySessionsFound = new AtomicBoolean(false);
+        // Add a flag to track if we've already finished loading (to avoid double-finishing)
+        final AtomicBoolean hasFinished = new AtomicBoolean(false);
+        // Track which departments have responded
+        final Set<String> respondedDepartments = Collections.synchronizedSet(new HashSet<>());
 
         Log.d(TAG, "Loading multi-department timetable for lecturer: " + lecturerId);
-        showProgressDialog("Loading timetable data from all departments...");
+        showProgressDialog("Please wait (loading timetable data from all departments)");
+        
+        // Clear existing session data
+        sessions.clear();
 
         // Add a timeout to ensure we give Firebase enough time to load all departments
-final Handler timeoutHandler = new Handler();
-final Runnable timeoutRunnable = () -> {
-    Log.d(TAG, "Timeout reached - continuing to wait for remaining departments");
-    
-    // Update the progress dialog to let the user know we're still working
-    runOnUiThread(() -> {
-        if (progressDialog != null && progressDialog.isShowing()) {
-            // Just update the message, but keep waiting for all departments
-            MaterialAlertDialogBuilder builder = new MaterialAlertDialogBuilder(ViewTimetableActivity.this);
-            builder.setTitle("Still Loading");
-            builder.setMessage("Taking longer than expected. Please wait while we finish loading the timetable...");
-            builder.setCancelable(false);
+        final Handler timeoutHandler = new Handler(Looper.getMainLooper());
+        final Runnable timeoutRunnable = () -> {
+            Log.d(TAG, "Timeout reached - continuing to wait for remaining departments");
             
-            dismissProgressDialog();
-            progressDialog = builder.create();
-            progressDialog.show();
-        }
-    });
-    
-    // Don't show empty state yet - we'll wait for all departments to report
-    // This ensures we don't prematurely show "no sessions" if sessions arrive late
-};
+            // Update the progress dialog to let the user know we're still working
+            runOnUiThread(() -> {
+                if (progressDialog != null && progressDialog.isShowing()) {
+                    // Just update the message, but keep waiting for all departments
+                    MaterialAlertDialogBuilder builder = new MaterialAlertDialogBuilder(ViewTimetableActivity.this);
+                    builder.setTitle("Still Loading");
+                    builder.setMessage("Taking longer than expected. Please wait while we finish loading the timetable...");
+                    builder.setCancelable(false);
+                    
+                    dismissProgressDialog();
+                    progressDialog = builder.create();
+                    progressDialog.show();
+                }
+            });
+        };
+        
+        // Add a 45-second HARD timeout that will force completion after 45 seconds
+        // This gives plenty of time for all departments to respond while still preventing infinite hanging
+        final Runnable hardTimeoutRunnable = new Runnable() {
+            @Override
+            public void run() {
+                Log.d(TAG, "Hard timeout reached - forcing timetable display");
+                
+                // Log which departments never responded
+                for (String dept : departments) {
+                    if (!respondedDepartments.contains(dept)) {
+                        Log.e(TAG, "Department " + dept + " never responded to the timetable query");
+                    }
+                }
+                
+                // Force completion if we haven't already finished
+                if (!hasFinished.getAndSet(true)) {
+                    // Show a warning to the user about potentially incomplete data
+                    runOnUiThread(() -> {
+                        Toast.makeText(ViewTimetableActivity.this, 
+                            "Some departments took too long to respond. Timetable may be incomplete.", 
+                            Toast.LENGTH_LONG).show();
+                            
+                        // Explicitly remove any pending callbacks to ensure they don't fire later
+                        timeoutHandler.removeCallbacksAndMessages(null);
+                        
+                        // Complete the loading process with whatever data we have
+                        finishLoadingLecturerTimetable(anySessionsFound.get());
+                    });
+                }
+            }
+        };
 
-        // Set a 7-second timeout to give Firebase more time to load all departments
-        timeoutHandler.postDelayed(timeoutRunnable, 7000);
+        // THIS IS CRITICAL: We need to guarantee that our hard timeout actually executes
+        new Thread(() -> {
+            try {
+                // Set a 7-second timeout for the first message
+                Thread.sleep(7000);
+                timeoutHandler.post(timeoutRunnable);
+                
+                // Then wait another 15 seconds (22 seconds total) for the hard timeout
+                Thread.sleep(15000);
+                
+                // Force the hard timeout on the main thread - this MUST execute
+                runOnUiThread(() -> {
+                    Log.e(TAG, "FORCING hard timeout after waiting 22 seconds");
+                    hardTimeoutRunnable.run();
+                });
+            } catch (InterruptedException e) {
+                Log.e(TAG, "Timeout thread was interrupted", e);
+                // Still try to force completion
+                runOnUiThread(hardTimeoutRunnable);
+            }
+        }).start();
+        
+        // Get a reference to the timetable sessions data
+        DatabaseReference baseRef = FirebaseDatabase.getInstance().getReference()
+                .child("department_timetableSessions");
 
         for (String dept : departments) {
-            DatabaseReference deptRef = FirebaseDatabase.getInstance().getReference()
-                    .child("department_timetableSessions")
-                    .child(dept);
-
-            // Query for this lecturer's sessions
+            DatabaseReference deptRef = baseRef.child(dept);
+            
+            // This query specifically requests data from the server and ignores the cache
             Query query = deptRef.orderByChild("lecturerId").equalTo(lecturerId);
-
+            
+            // Use a listener that consistently gets data updates rather than one-time
             query.addListenerForSingleValueEvent(new ValueEventListener() {
                 @Override
                 public void onDataChange(@NonNull DataSnapshot dataSnapshot) {
+                    // Mark this department as having responded
+                    respondedDepartments.add(dept);
+                    
                     if (dataSnapshot.exists()) {
                         Log.d(TAG, "Found " + dataSnapshot.getChildrenCount() + " sessions for lecturer " + lecturerId + " in department " + dept);
 
@@ -512,21 +617,30 @@ final Runnable timeoutRunnable = () -> {
 
                     // Check if this was the last department to process
                     if (pendingDepartments.decrementAndGet() == 0) {
-                        // Cancel the timeout as we've finished normally
-                        timeoutHandler.removeCallbacks(timeoutRunnable);
-                        finishLoadingLecturerTimetable(anySessionsFound.get());
+                        // Check if we haven't already finished due to timeout
+                        if (!hasFinished.getAndSet(true)) {
+                            // Remove the hard timeout since we completed normally
+                            timeoutHandler.removeCallbacksAndMessages(null);
+                            finishLoadingLecturerTimetable(anySessionsFound.get());
+                        }
                     }
                 }
 
                 @Override
                 public void onCancelled(@NonNull DatabaseError databaseError) {
                     Log.e(TAG, "Error loading lecturer sessions for " + dept + ": " + databaseError.getMessage());
+                    
+                    // Mark this department as having responded (with an error)
+                    respondedDepartments.add(dept);
 
                     // Even if there's an error, we need to continue processing
                     if (pendingDepartments.decrementAndGet() == 0) {
-                        // Cancel the timeout as we've finished
-                        timeoutHandler.removeCallbacks(timeoutRunnable);
-                        finishLoadingLecturerTimetable(anySessionsFound.get());
+                        // Check if we haven't already finished due to timeout
+                        if (!hasFinished.getAndSet(true)) {
+                            // Remove the hard timeout since we completed normally
+                            timeoutHandler.removeCallbacksAndMessages(null);
+                            finishLoadingLecturerTimetable(anySessionsFound.get());
+                        }
                     }
                 }
             });
@@ -1220,6 +1334,23 @@ final Runnable timeoutRunnable = () -> {
     }
 
     private int getCourseColor(String courseId) {
+        // For consolidated department views with department coloring, create a lookup key
+        String courseKeyWithDept = null;
+        for (TimetableSession session : sessions) {
+            if (session.getCourseId().equals(courseId) && 
+                session.getDepartment() != null && 
+                !session.getDepartment().isEmpty()) {
+                courseKeyWithDept = session.getDepartment() + ":" + courseId;
+                break;
+            }
+        }
+        
+        // If we have a department-specific key, use that first
+        if (courseKeyWithDept != null && courseColors.containsKey(courseKeyWithDept)) {
+            return courseColors.get(courseKeyWithDept);
+        }
+        
+        // Otherwise fall back to the regular course ID
         if (!courseColors.containsKey(courseId)) {
             // Generate a new color for this course
             int color = generateRandomColor();
@@ -1367,91 +1498,6 @@ final Runnable timeoutRunnable = () -> {
         // Take first 3 letters and add a sequence number
         String prefix = courseId.length() > 3 ? courseId.substring(0, 3) : courseId;
         return prefix.toUpperCase() + "-" + Math.abs(courseId.hashCode() % 1000);
-    }
-
-    /**
-     * Display a dialog showing all sessions in a particular time slot
-     */
-    private void showAllSessionsInTimeSlot(List<TimetableSession> sessions) {
-        // Create an AlertDialog to show all sessions
-        AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("All Classes in This Time Slot");
-
-        // Create the content view
-        LinearLayout contentLayout = new LinearLayout(this);
-        contentLayout.setOrientation(LinearLayout.VERTICAL);
-        contentLayout.setPadding(dpToPx(16), dpToPx(8), dpToPx(16), dpToPx(8));
-
-        // Create a reference to the dialog that will be created
-        final AlertDialog[] dialogRef = new AlertDialog[1];
-
-        // Add details for each session
-        for (TimetableSession session : sessions) {
-            // Add a colored header for the course name
-            TextView headerView = new TextView(this);
-            headerView.setText(session.getCourseName());
-            headerView.setTextSize(16);
-            headerView.setTypeface(null, Typeface.BOLD);
-            headerView.setTextColor(Color.WHITE);
-            headerView.setBackgroundColor(getCourseColor(session.getCourseId()));
-            headerView.setPadding(dpToPx(8), dpToPx(8), dpToPx(8), dpToPx(8));
-            headerView.setGravity(Gravity.CENTER);
-
-            // Add some margin at the top if not the first item
-            if (sessions.indexOf(session) > 0) {
-                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT);
-                params.topMargin = dpToPx(16);
-                headerView.setLayoutParams(params);
-            }
-
-            contentLayout.addView(headerView);
-
-            // Add basic details
-            addDetailRow(contentLayout, "Lecturer", session.getLecturerName());
-            addDetailRow(contentLayout, "Location", session.getResourceName());
-
-            // Add a view details button for this session
-            Button detailsButton = new Button(this);
-            detailsButton.setText("View Full Details");
-            detailsButton.setBackgroundColor(Color.parseColor("#6200EE"));
-            detailsButton.setTextColor(Color.WHITE);
-            LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT);
-            buttonParams.gravity = Gravity.END;
-            buttonParams.setMargins(0, dpToPx(4), 0, dpToPx(8));
-            detailsButton.setLayoutParams(buttonParams);
-
-            final TimetableSession finalSession = session;
-            detailsButton.setOnClickListener(v -> {
-                // Dismiss this dialog and show details for the selected session
-                if (dialogRef[0] != null) {
-                    dialogRef[0].dismiss();
-                }
-                showSessionDetails(finalSession);
-            });
-
-            contentLayout.addView(detailsButton);
-        }
-
-        ScrollView scrollView = new ScrollView(this);
-        scrollView.addView(contentLayout);
-
-        builder.setView(scrollView);
-        builder.setPositiveButton("Close", (dialog, which) -> dialog.dismiss());
-
-        AlertDialog dialog = builder.create();
-        dialogRef[0] = dialog;  // Store reference to the dialog
-        dialog.show();
-
-        // Make sure the dialog doesn't get too tall (limit to 80% of screen height)
-        WindowManager.LayoutParams layoutParams = new WindowManager.LayoutParams();
-        layoutParams.copyFrom(dialog.getWindow().getAttributes());
-        layoutParams.width = WindowManager.LayoutParams.MATCH_PARENT;
-        layoutParams.height = (int) (getResources().getDisplayMetrics().heightPixels * 0.8);
-        dialog.getWindow().setAttributes(layoutParams);
     }
 
     /**
@@ -1679,23 +1725,45 @@ final Runnable timeoutRunnable = () -> {
      */
     private List<TimetableSession> getSessionsForTimeAndDay(int hour, int day) {
         List<TimetableSession> result = new ArrayList<>();
-
-        String dayString = DAY_NAMES[day];
+        // Set to track unique session combinations to avoid duplicates
+        Set<String> uniqueSessionKeys = new HashSet<>();
 
         for (TimetableSession session : sessions) {
-            // Check if session is on this day
-            if (!session.getDayOfWeek().equalsIgnoreCase(dayString)) {
-                continue;
-            }
+            // Parse day of week
+            int sessionDay = parseDayOfWeek(session.getDayOfWeek());
+            if (sessionDay != day) continue; // Skip if not the right day
 
             // Parse start and end times to check if session occurs during this hour
             int sessionStartHour = parseHour(session.getStartTime());
             int sessionEndHour = parseHour(session.getEndTime());
 
             // Check if this hour falls within the session time
+            // A session covers the hour if it starts at or before the hour and ends after the hour
             if (hour >= sessionStartHour && hour < sessionEndHour) {
-                result.add(session);
+                // Create a unique key for this session to prevent duplicates
+                String courseId = session.getCourseId();
+                String lecturerId = session.getLecturerId();
+                String uniqueKey = courseId + "_" + lecturerId + "_" + sessionStartHour + "_" + sessionEndHour;
+
+                if (!uniqueSessionKeys.contains(uniqueKey)) {
+                    result.add(session);
+                    uniqueSessionKeys.add(uniqueKey);
+
+                    // Add debug logging for session matching
+                    Log.d(TAG, "Session match for day " + day + " hour " + hour + ": " +
+                            session.getCourseName() + " (" + session.getStartTime() + "-" +
+                            session.getEndTime() + ")");
+                } else {
+                    Log.d(TAG, "Skipping duplicate session for day " + day + " hour " + hour + ": " +
+                            session.getCourseName());
+                }
             }
+        }
+
+        if (result.isEmpty()) {
+            Log.d(TAG, "No sessions found for day " + day + " hour " + hour);
+        } else {
+            Log.d(TAG, "Found " + result.size() + " unique sessions for day " + day + " hour " + hour);
         }
 
         return result;
@@ -2000,5 +2068,623 @@ final Runnable timeoutRunnable = () -> {
         }
 
         Log.d(TAG, "Session validation: " + validCount + " valid, " + invalidCount + " invalid");
+    }
+
+    // New method to load consolidated lecturer timetable
+    private void loadConsolidatedLecturerTimetable(String lecturerId) {
+        Log.d(TAG, "Loading consolidated timetable for lecturer: " + lecturerId);
+        showProgressDialog("Loading your consolidated timetable...");
+        
+        // Clear existing session data
+        sessions.clear();
+        
+        // Reference to the consolidated lecturer timetable in Firebase
+        DatabaseReference lecturerTimetableRef = FirebaseDatabase.getInstance().getReference()
+                .child("lecturer_timetables")
+                .child(lecturerId);
+        
+        // Create a timeout handler to ensure the app doesn't hang indefinitely
+        final Handler timeoutHandler = new Handler(Looper.getMainLooper());
+        final AtomicBoolean hasCompleted = new AtomicBoolean(false);
+        
+        // Set a 15-second timeout (should be plenty since we're only making one query)
+        // This gives plenty of time for all departments to respond while still preventing infinite hanging
+        Runnable timeoutRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (!hasCompleted.getAndSet(true)) {
+                    Log.e(TAG, "Timeout reached while loading consolidated lecturer timetable");
+                    Toast.makeText(ViewTimetableActivity.this, 
+                        "Timetable loading took too long. Please try again later.", 
+                        Toast.LENGTH_LONG).show();
+                    dismissProgressDialog();
+                    finish(); // Return to previous screen
+                }
+            }
+        };
+        
+        timeoutHandler.postDelayed(timeoutRunnable, 15000);
+        
+        // Query the consolidated timetable
+        lecturerTimetableRef.addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(@NonNull DataSnapshot dataSnapshot) {
+                // Cancel the timeout since we got a response
+                timeoutHandler.removeCallbacks(timeoutRunnable);
+                
+                if (!hasCompleted.getAndSet(true)) {
+                    List<TimetableSession> lecturerSessions = new ArrayList<>();
+                    
+                    // Process all sessions from the consolidated timetable
+                    for (DataSnapshot sessionSnapshot : dataSnapshot.getChildren()) {
+                        try {
+                            TimetableSession session = sessionSnapshot.getValue(TimetableSession.class);
+                            if (session != null) {
+                                lecturerSessions.add(session);
+                            }
+                        } catch (Exception e) {
+                            Log.e(TAG, "Error parsing session data", e);
+                        }
+                    }
+                    
+                    // Process the loaded sessions
+                    if (!lecturerSessions.isEmpty()) {
+                        Log.d(TAG, "Loaded " + lecturerSessions.size() + " sessions for lecturer");
+                        sessions.addAll(lecturerSessions);
+                        
+                        // Display the timetable
+                        dismissProgressDialog();
+                        emptyView.setVisibility(View.GONE);
+                        findViewById(R.id.timetableScroll).setVisibility(View.VISIBLE);
+                        validateSessions();
+                        displayTimetable();
+                    } else {
+                        Log.d(TAG, "No sessions found for lecturer " + lecturerId);
+                        Toast.makeText(ViewTimetableActivity.this, 
+                            "No sessions found in your timetable.", 
+                            Toast.LENGTH_LONG).show();
+                        dismissProgressDialog();
+                    }
+                }
+            }
+            
+            @Override
+            public void onCancelled(@NonNull DatabaseError databaseError) {
+                // Cancel the timeout since we got a response (even if it's an error)
+                timeoutHandler.removeCallbacks(timeoutRunnable);
+                
+                if (!hasCompleted.getAndSet(true)) {
+                    Log.e(TAG, "Error loading lecturer timetable: " + databaseError.getMessage());
+                    Toast.makeText(ViewTimetableActivity.this, 
+                        "Failed to load timetable: " + databaseError.getMessage(), 
+                        Toast.LENGTH_LONG).show();
+                    dismissProgressDialog();
+                    finish(); // Return to previous screen
+                }
+            }
+        });
+    }
+    
+    /**
+     * Loads the admin master consolidated timetable from the centralized Firebase node
+     * This provides a single view of all courses across all departments
+     */
+    private void loadAdminMasterConsolidatedTimetable() {
+        Log.d(TAG, "Loading admin master consolidated timetable");
+        showProgressDialog("Loading master timetable (all courses). This may take a moment...");
+        
+        // Clear existing session data
+        sessions.clear();
+        
+        // Reference to the consolidated admin timetable in Firebase
+        DatabaseReference consolidatedRef = FirebaseDatabase.getInstance().getReference()
+                .child("all_departments_timetable");
+        
+        // Add a flag to track if we've already finished loading (for timeout handling)
+        final AtomicBoolean hasFinished = new AtomicBoolean(false);
+        
+        // Create a timeout handler to ensure the app doesn't hang indefinitely
+        final Handler timeoutHandler = new Handler(Looper.getMainLooper());
+        
+        // Set a 20-second HARD timeout that will force completion after 20 seconds
+        // This gives plenty of time for the data to load while still preventing infinite hanging
+        final Runnable hardTimeoutRunnable = new Runnable() {
+            @Override
+            public void run() {
+                Log.d(TAG, "Hard timeout reached - forcing admin master timetable display");
+                
+                // Log which departments never responded
+                for (String dept : Arrays.asList("Computer Science", "Information Technology", "Engineering", "Business")) {
+                    Log.e(TAG, "Department " + dept + " never responded to the admin master consolidated timetable query");
+                }
+                
+                // Force completion if we haven't already finished
+                if (!hasFinished.getAndSet(true)) {
+                    // Show a warning to the user about potentially incomplete data
+                    runOnUiThread(() -> {
+                        Toast.makeText(ViewTimetableActivity.this, 
+                            "Timetable loading took too long. Data may be incomplete.", 
+                            Toast.LENGTH_LONG).show();
+                            
+                        // Explicitly remove any pending callbacks to ensure they don't fire later
+                        timeoutHandler.removeCallbacksAndMessages(null);
+                        
+                        // Complete the loading process with whatever data we have
+                        finishLoadingAdminMasterTimetable();
+                    });
+                }
+            }
+        };
+        
+        // Set a 20-second timeout
+        timeoutHandler.postDelayed(hardTimeoutRunnable, 20000);
+        
+        // Query the consolidated timetable
+        consolidatedRef.addListenerForSingleValueEvent(new ValueEventListener() {
+            @Override
+            public void onDataChange(@NonNull DataSnapshot dataSnapshot) {
+                // Check if we haven't already finished due to timeout
+                if (!hasFinished.getAndSet(true)) {
+                    // Cancel the timeout since we got a response
+                    timeoutHandler.removeCallbacks(hardTimeoutRunnable);
+                    
+                    Log.d(TAG, "Received admin master timetable data: " + dataSnapshot.getChildrenCount() + " sessions");
+                    
+                    // Process all sessions from the consolidated timetable
+                    for (DataSnapshot sessionSnapshot : dataSnapshot.getChildren()) {
+                        try {
+                            TimetableSession session = sessionSnapshot.getValue(TimetableSession.class);
+                            if (session != null) {
+                                // Add to our session list
+                                sessions.add(session);
+                            }
+                        } catch (Exception e) {
+                            Log.e(TAG, "Error parsing session data", e);
+                        }
+                    }
+                    
+                    // Display the timetable
+                    finishLoadingAdminMasterTimetable();
+                }
+            }
+            
+            @Override
+            public void onCancelled(@NonNull DatabaseError databaseError) {
+                Log.e(TAG, "Error loading admin master timetable", databaseError.toException());
+                
+                // Check if we haven't already finished due to timeout
+                if (!hasFinished.getAndSet(true)) {
+                    // Cancel the timeout since we got a response (even if it's an error)
+                    timeoutHandler.removeCallbacks(hardTimeoutRunnable);
+                    
+                    runOnUiThread(() -> {
+                        Toast.makeText(ViewTimetableActivity.this, 
+                            "Failed to load master timetable: " + databaseError.getMessage(), 
+                            Toast.LENGTH_LONG).show();
+                        dismissProgressDialog();
+                        
+                        // Show empty view with error message
+                        emptyView.setVisibility(View.VISIBLE);
+                        findViewById(R.id.timetableScroll).setVisibility(View.GONE);
+                        emptyView.setText("Error loading master timetable. Please try again.");
+                    });
+                }
+            }
+        });
+    }
+    
+    /**
+     * Finishes loading the admin master timetable and displays it
+     */
+    private void finishLoadingAdminMasterTimetable() {
+        runOnUiThread(() -> {
+            dismissProgressDialog();
+            
+            if (sessions != null && !sessions.isEmpty()) {
+                Log.d(TAG, "Displaying admin master timetable with " + sessions.size() + " sessions");
+                
+                // Color-code sessions by department to make them visually distinguishable
+                Map<String, Integer> departmentColors = new HashMap<>();
+                String[] departments = {"Computer Science", "Information Technology", "Engineering", "Business"};
+                int[] colorResources = {
+                    Color.rgb(230, 25, 75),   // Red for CS
+                    Color.rgb(60, 180, 75),   // Green for IT
+                    Color.rgb(255, 225, 25),  // Yellow for Engineering
+                    Color.rgb(0, 130, 200)    // Blue for Business
+                };
+                
+                for (int i = 0; i < departments.length; i++) {
+                    departmentColors.put(departments[i], colorResources[i % colorResources.length]);
+                }
+                
+                // Add a session department mapping to courseColors for rendering
+                for (TimetableSession session : sessions) {
+                    String dept = session.getDepartment();
+                    if (dept != null && !dept.isEmpty()) {
+                        // Create a course key that includes department for uniqueness
+                        String courseKey = dept + ":" + session.getCourseId();
+                        // Get the color for this department or use a random one
+                        Integer color = departmentColors.getOrDefault(dept, 
+                            Color.rgb(random.nextInt(256), random.nextInt(256), random.nextInt(256)));
+                        courseColors.put(courseKey, color);
+                    }
+                }
+                
+                // Now draw the timetable
+                emptyView.setVisibility(View.GONE);
+                findViewById(R.id.timetableScroll).setVisibility(View.VISIBLE);
+                validateSessions();
+                displayTimetable();
+                
+                // Display a legend for department colors
+                displayDepartmentColorLegend(departmentColors);
+                
+                // Show session statistics
+                displaySessionStatistics();
+            } else {
+                // No sessions found
+                emptyView.setVisibility(View.VISIBLE);
+                findViewById(R.id.timetableScroll).setVisibility(View.GONE);
+                emptyView.setText("No timetable sessions found in the master database.\n\nPlease generate timetables for departments first.");
+            }
+        });
+    }
+    
+    /**
+     * Displays statistics about the loaded timetable sessions
+     */
+    private void displaySessionStatistics() {
+        if (sessions == null || sessions.isEmpty()) {
+            return;
+        }
+        
+        // Create a container for the statistics
+        LinearLayout statsContainer = new LinearLayout(this);
+        statsContainer.setOrientation(LinearLayout.VERTICAL);
+        statsContainer.setPadding(16, 16, 16, 16);
+        statsContainer.setBackgroundColor(Color.WHITE);
+        
+        // Add a title
+        TextView titleView = new TextView(this);
+        titleView.setText("Timetable Statistics");
+        titleView.setTextSize(16);
+        titleView.setTypeface(null, Typeface.BOLD);
+        titleView.setPadding(0, 0, 0, 16);
+        statsContainer.addView(titleView);
+        
+        // Count sessions by department
+        Map<String, Integer> departmentCounts = new HashMap<>();
+        for (TimetableSession session : sessions) {
+            String dept = session.getDepartment();
+            if (dept != null && !dept.isEmpty()) {
+                departmentCounts.put(dept, departmentCounts.getOrDefault(dept, 0) + 1);
+            }
+        }
+        
+        // Display session counts by department
+        for (Map.Entry<String, Integer> entry : departmentCounts.entrySet()) {
+            TextView statLine = new TextView(this);
+            statLine.setText(entry.getKey() + ": " + entry.getValue() + " sessions");
+            statLine.setPadding(8, 4, 0, 4);
+            statsContainer.addView(statLine);
+        }
+        
+        // Display total count
+        TextView totalLine = new TextView(this);
+        totalLine.setText("Total: " + sessions.size() + " sessions");
+        totalLine.setTypeface(null, Typeface.BOLD);
+        totalLine.setPadding(8, 8, 0, 4);
+        statsContainer.addView(totalLine);
+        
+        // Add the statistics to the timetable layout (after the legend)
+        timetableContentLayout.addView(statsContainer, 1);
+    }
+    
+    /**
+     * Displays a color legend to identify departments in the consolidated view
+     */
+    private void displayDepartmentColorLegend(Map<String, Integer> departmentColors) {
+        // Create a container for the legend
+        LinearLayout legendContainer = new LinearLayout(this);
+        legendContainer.setOrientation(LinearLayout.VERTICAL);
+        legendContainer.setPadding(16, 16, 16, 16);
+        legendContainer.setBackgroundColor(Color.WHITE);
+        
+        // Add a title
+        TextView titleView = new TextView(this);
+        titleView.setText("Department Colors");
+        titleView.setTextSize(16);
+        titleView.setTypeface(null, Typeface.BOLD);
+        titleView.setPadding(0, 0, 0, 16);
+        legendContainer.addView(titleView);
+        
+        // Add each department with its color
+        for (Map.Entry<String, Integer> entry : departmentColors.entrySet()) {
+            LinearLayout itemContainer = new LinearLayout(this);
+            itemContainer.setOrientation(LinearLayout.HORIZONTAL);
+            itemContainer.setGravity(Gravity.CENTER_VERTICAL);
+            itemContainer.setPadding(0, 4, 0, 4);
+            
+            // Color box
+            View colorBox = new View(this);
+            colorBox.setBackgroundColor(entry.getValue());
+            LinearLayout.LayoutParams boxParams = new LinearLayout.LayoutParams(40, 40);
+            colorBox.setLayoutParams(boxParams);
+            
+            // Department name
+            TextView deptName = new TextView(this);
+            deptName.setText(entry.getKey());
+            deptName.setPadding(16, 0, 0, 0);
+            
+            itemContainer.addView(colorBox);
+            itemContainer.addView(deptName);
+            legendContainer.addView(itemContainer);
+        }
+        
+        // Add the legend to the timetable layout
+        timetableContentLayout.addView(legendContainer, 0);
+    }
+    
+    /**
+     * Loads timetable sessions from all departments for the admin consolidated view
+     */
+    private void loadAllDepartmentsTimetable(List<String> departments) {
+        Log.d(TAG, "Loading consolidated timetable for all departments: " + departments);
+        showProgressDialog("Loading all department timetables. This may take a few moments...");
+        
+        // Clear existing session data
+        sessions.clear();
+        
+        // Count how many departments we need to process
+        final AtomicInteger pendingDepartments = new AtomicInteger(departments.size());
+        final AtomicBoolean anySessionsFound = new AtomicBoolean(false);
+        
+        // Add a flag to track if we've already finished loading (to avoid double-finishing)
+        final AtomicBoolean hasFinished = new AtomicBoolean(false);
+        
+        // Track which departments have responded
+        final Set<String> respondedDepartments = Collections.synchronizedSet(new HashSet<>());
+        
+        // Create a timeout handler to ensure the app doesn't hang indefinitely
+        final Handler timeoutHandler = new Handler(Looper.getMainLooper());
+        
+        // Set a 15-second HARD timeout that will force completion after 15 seconds
+        // This is shorter than lecturer view since admins may want to quickly browse all departments
+        final Runnable hardTimeoutRunnable = new Runnable() {
+            @Override
+            public void run() {
+                Log.d(TAG, "Hard timeout reached - forcing admin consolidated timetable display");
+                
+                // Log which departments never responded
+                for (String dept : departments) {
+                    if (!respondedDepartments.contains(dept)) {
+                        Log.e(TAG, "Department " + dept + " never responded to the admin consolidated timetable query");
+                    }
+                }
+                
+                // Force completion if we haven't already finished
+                if (!hasFinished.getAndSet(true)) {
+                    // Show a warning to the user about potentially incomplete data
+                    runOnUiThread(() -> {
+                        Toast.makeText(ViewTimetableActivity.this, 
+                            "Some departments took too long to respond. Timetable may be incomplete.", 
+                            Toast.LENGTH_LONG).show();
+                            
+                        // Explicitly remove any pending callbacks to ensure they don't fire later
+                        timeoutHandler.removeCallbacksAndMessages(null);
+                        
+                        // Show what we have so far
+                        finishLoadingAllDepartmentsTimetable(anySessionsFound.get());
+                    });
+                }
+            }
+        };
+        
+        // Set a 15-second timeout
+        timeoutHandler.postDelayed(hardTimeoutRunnable, 15000);
+        
+        // Use a background thread to query all departments
+        new Thread(() -> {
+            // Get a reference to the base timetable sessions for all departments
+            DatabaseReference baseRef = FirebaseDatabase.getInstance().getReference()
+                    .child("department_timetableSessions");
+
+            for (String dept : departments) {
+                DatabaseReference deptRef = baseRef.child(dept);
+                
+                // Get the default (latest) timetable for this department
+                deptRef.addListenerForSingleValueEvent(new ValueEventListener() {
+                    @Override
+                    public void onDataChange(@NonNull DataSnapshot dataSnapshot) {
+                        Log.d(TAG, "Admin view: Got response from department: " + dept);
+                        respondedDepartments.add(dept);
+                        
+                        // Process all sessions
+                        for (DataSnapshot sessionSnapshot : dataSnapshot.getChildren()) {
+                            try {
+                                TimetableSession session = sessionSnapshot.getValue(TimetableSession.class);
+                                if (session != null) {
+                                    // Add department info to sessions if not already there
+                                    if (session.getDepartment() == null || session.getDepartment().isEmpty()) {
+                                        session.setDepartment(dept);
+                                    }
+                                    
+                                    // Add to our master list
+                                    sessions.add(session);
+                                    anySessionsFound.set(true);
+                                }
+                            } catch (Exception e) {
+                                Log.e(TAG, "Error parsing session data for department " + dept, e);
+                            }
+                        }
+                        
+                        // Check if this was the last department to respond
+                        if (pendingDepartments.decrementAndGet() == 0) {
+                            // Check if we haven't already finished due to timeout
+                            if (!hasFinished.getAndSet(true)) {
+                                // Remove the hard timeout since we completed normally
+                                timeoutHandler.removeCallbacks(hardTimeoutRunnable);
+                                finishLoadingAllDepartmentsTimetable(anySessionsFound.get());
+                            }
+                        }
+                    }
+                    
+                    @Override
+                    public void onCancelled(@NonNull DatabaseError databaseError) {
+                        Log.e(TAG, "Error loading admin consolidated view for department " + dept, databaseError.toException());
+                        respondedDepartments.add(dept); // Mark as responded even though it failed
+                        
+                        // Check if this was the last department query to complete
+                        if (pendingDepartments.decrementAndGet() == 0) {
+                            // Check if we haven't already finished due to timeout
+                            if (!hasFinished.getAndSet(true)) {
+                                // Remove the hard timeout since we completed (with errors)
+                                timeoutHandler.removeCallbacks(hardTimeoutRunnable);
+                                finishLoadingAllDepartmentsTimetable(anySessionsFound.get());
+                            }
+                        }
+                    }
+                });
+            }
+        }).start();
+    }
+    
+    /**
+     * Finishes loading the all departments timetable and displays it
+     */
+    private void finishLoadingAllDepartmentsTimetable(boolean anySessionsFound) {
+        runOnUiThread(() -> {
+            dismissProgressDialog();
+            
+            if (anySessionsFound) {
+                // Color-code sessions by department to make them visually distinguishable
+                // Create a consistent color for each department
+                Map<String, Integer> departmentColors = new HashMap<>();
+                String[] departments = {"Computer Science", "Information Technology", "Engineering", "Business"};
+                int[] colorResources = {
+                    Color.rgb(230, 25, 75),   // Red for CS
+                    Color.rgb(60, 180, 75),   // Green for IT
+                    Color.rgb(255, 225, 25),  // Yellow for Engineering
+                    Color.rgb(0, 130, 200)    // Blue for Business
+                };
+                
+                for (int i = 0; i < departments.length; i++) {
+                    departmentColors.put(departments[i], colorResources[i % colorResources.length]);
+                }
+                
+                // Add a session department mapping to courseColors for rendering
+                for (TimetableSession session : sessions) {
+                    String dept = session.getDepartment();
+                    if (dept != null && !dept.isEmpty()) {
+                        // Create a course key that includes department for uniqueness
+                        String courseKey = dept + ":" + session.getCourseId();
+                        // Get the color for this department or use a random one
+                        Integer color = departmentColors.getOrDefault(dept, 
+                            Color.rgb(random.nextInt(256), random.nextInt(256), random.nextInt(256)));
+                        courseColors.put(courseKey, color);
+                    }
+                }
+                
+                // Now draw the timetable
+                emptyView.setVisibility(View.GONE);
+                findViewById(R.id.timetableScroll).setVisibility(View.VISIBLE);
+                validateSessions();
+                displayTimetable();
+                
+                // Display a legend for department colors
+                displayDepartmentColorLegend(departmentColors);
+            } else {
+                // No sessions found
+                emptyView.setVisibility(View.VISIBLE);
+                findViewById(R.id.timetableScroll).setVisibility(View.GONE);
+                emptyView.setText("No timetable sessions found for any department.");
+            }
+        });
+    }
+    
+    /**
+     * Display a dialog showing all sessions in a particular time slot
+     */
+    private void showAllSessionsInTimeSlot(List<TimetableSession> sessions) {
+        // Create an AlertDialog to show all sessions
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("All Classes in This Time Slot");
+
+        // Create the content view
+        LinearLayout contentLayout = new LinearLayout(this);
+        contentLayout.setOrientation(LinearLayout.VERTICAL);
+        contentLayout.setPadding(dpToPx(16), dpToPx(8), dpToPx(16), dpToPx(8));
+
+        // Create a reference to the dialog that will be created
+        final AlertDialog[] dialogRef = new AlertDialog[1];
+
+        // Add details for each session
+        for (TimetableSession session : sessions) {
+            // Add a colored header for the course name
+            TextView headerView = new TextView(this);
+            headerView.setText(session.getCourseId());
+            headerView.setTextSize(16);
+            headerView.setTypeface(null, Typeface.BOLD);
+            headerView.setTextColor(Color.WHITE);
+            headerView.setBackgroundColor(getCourseColor(session.getCourseId()));
+            headerView.setPadding(dpToPx(8), dpToPx(8), dpToPx(8), dpToPx(8));
+            headerView.setGravity(Gravity.CENTER);
+
+            // Add some margin at the top if not the first item
+            if (sessions.indexOf(session) > 0) {
+                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT);
+                params.topMargin = dpToPx(16);
+                headerView.setLayoutParams(params);
+            }
+
+            contentLayout.addView(headerView);
+
+            // Add basic details
+            addDetailRow(contentLayout, "Lecturer", session.getLecturerId());
+            addDetailRow(contentLayout, "Location", session.getResourceId());
+
+            // Add a view details button for this session
+            Button detailsButton = new Button(this);
+            detailsButton.setText("View Full Details");
+            detailsButton.setBackgroundColor(Color.parseColor("#6200EE"));
+            detailsButton.setTextColor(Color.WHITE);
+            LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            buttonParams.gravity = Gravity.END;
+            buttonParams.setMargins(0, dpToPx(4), 0, dpToPx(8));
+            detailsButton.setLayoutParams(buttonParams);
+
+            final TimetableSession finalSession = session;
+            detailsButton.setOnClickListener(v -> {
+                // Dismiss this dialog and show details for the selected session
+                if (dialogRef[0] != null) {
+                    dialogRef[0].dismiss();
+                }
+                // For now just dismiss the dialog without showing details
+                // showSessionDetails(finalSession);
+            });
+
+            contentLayout.addView(detailsButton);
+        }
+
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.addView(contentLayout);
+
+        builder.setView(scrollView);
+        builder.setPositiveButton("Close", (dialog, which) -> dialog.dismiss());
+
+        AlertDialog dialog = builder.create();
+        dialogRef[0] = dialog;  // Store reference to the dialog
+        dialog.show();
+
+        // Make sure the dialog doesn't get too tall (limit to 80% of screen height)
+        WindowManager.LayoutParams layoutParams = new WindowManager.LayoutParams();
+        layoutParams.copyFrom(dialog.getWindow().getAttributes());
+        layoutParams.width = WindowManager.LayoutParams.MATCH_PARENT;
+        layoutParams.height = (int) (getResources().getDisplayMetrics().heightPixels * 0.8);
+        dialog.getWindow().setAttributes(layoutParams);
     }
 }

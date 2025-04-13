@@ -1,5 +1,6 @@
 package com.example.manager.admin.ui;
 
+import android.Manifest;
 import android.app.AlertDialog;
 import android.os.Bundle;
 import android.os.Handler;
@@ -429,6 +430,29 @@ public class UnifiedTimetableGeneratorActivity extends AppCompatActivity {
                 // Process assigned lecturers from courses to ensure we have all needed lecturers
                 ensureAssignedLecturersExist();
                 
+                // After all loading is complete, check total session count for IT department
+                if (allDepartments.contains("Information Technology") && departmentCourses.containsKey("Information Technology")) {
+                    int totalSessions = 0;
+                    StringBuilder sessionDetails = new StringBuilder("Information Technology department sessions breakdown:\n");
+                    
+                    for (Course course : departmentCourses.get("Information Technology")) {
+                        CourseItem item = convertCourseToItem(course);
+                        int courseSessions = item.getNumberOfLectures() + item.getNumberOfLabs();
+                        totalSessions += courseSessions;
+                        
+                        sessionDetails.append("Course: ").append(course.getName())
+                                   .append(", credit hours: ").append(course.getCreditHours())
+                                   .append(", lectures: ").append(item.getNumberOfLectures())
+                                   .append(", labs: ").append(item.getNumberOfLabs())
+                                   .append(", total: ").append(courseSessions)
+                                   .append(", room type: ").append(course.getRequiredRoomType())
+                                   .append("\n");
+                    }
+                    
+                    Log.d(TAG, "TOTAL Information Technology sessions: " + totalSessions);
+                    Log.d(TAG, sessionDetails.toString());
+                }
+                
                 // Generate timetables for each department
                 mainHandler.post(() -> statusTextView.setText("Generating timetables for " + allDepartments.size() + " departments..."));
                 
@@ -528,6 +552,12 @@ public class UnifiedTimetableGeneratorActivity extends AppCompatActivity {
                     } else if (finalConflictsResolved) {
                         showSuccess("Successfully resolved " + finalResolvedCount + " resource conflicts across departments");
                     }
+                    
+                    // Consolidate and upload lecturer timetables
+                    consolidateAndUploadLecturerTimetables(departmentTimetables);
+                    
+                    // Consolidate all department timetables into a single view for admin access
+                    consolidateAllDepartmentsTimetable();
                 });
             } catch (Exception e) {
                 Log.e(TAG, "Error in timetable generation process", e);
@@ -1012,11 +1042,12 @@ public class UnifiedTimetableGeneratorActivity extends AppCompatActivity {
         item.setNumberOfLectures(lectures);
         item.setNumberOfLabs(labs);
         
-        // For debugging
-        Log.d(TAG, "Course " + course.getName() + " has " + lectures + " lectures and " + 
-              labs + " labs, total sessions: " + (lectures + labs));
+        Log.d(TAG, "Course " + course.getName() + " (department: " + course.getDepartment() + ") has " + lectures + " lectures and " + 
+              labs + " labs, total sessions: " + (lectures + labs) + ", credit hours: " + course.getCreditHours() + 
+              ", required room type: " + course.getRequiredRoomType() + 
+              ", required sessions per week: " + course.getRequiredSessionsPerWeek());
         
-        // Set assigned lecturer and resource IDs
+        // Add assigned lecturer and resource IDs
         item.setAssignedLecturerId(course.getAssignedLecturerId());
         item.setAssignedResourceId(course.getAssignedResourceId());
         
@@ -1087,6 +1118,12 @@ public class UnifiedTimetableGeneratorActivity extends AppCompatActivity {
         // Track all operations for batch completion
         Map<String, Object> allUpdates = new HashMap<>();
         
+        // Create a map of courses by ID for quick lookup
+        Map<String, Course> coursesById = new HashMap<>();
+        for (Course course : courses) {
+            coursesById.put(course.getId(), course);
+        }
+        
         // Process all sessions in the timetable
         for (TimetableSession session : timetable.getSessions()) {
             // Ensure timetableId is set on each session
@@ -1097,13 +1134,47 @@ public class UnifiedTimetableGeneratorActivity extends AppCompatActivity {
                 session.setId(sessionRef.push().getKey());
             }
             
+            // IMPORTANT: Verify and correct resource information from the original course data
+            String courseId = session.getCourseId();
+            if (courseId != null && !courseId.isEmpty()) {
+                Course course = coursesById.get(courseId);
+                if (course != null) {
+                    // If the course has an assigned room, make sure it's used in the session
+                    if (course.getAssignedResourceId() != null && !course.getAssignedResourceId().isEmpty()) {
+                        // The resource ID should match what's in the course
+                        session.setResourceId(course.getAssignedResourceId());
+                        
+                        // If the course has a direct assigned room name, use it
+                        if (course.getAssignedRoom() != null && !course.getAssignedRoom().isEmpty() && 
+                            !course.getAssignedRoom().equalsIgnoreCase("None")) {
+                            // Set the resource name from the course's assigned room
+                            session.setResourceName(course.getAssignedRoom());
+                            Log.d(TAG, "Corrected resource name for " + course.getName() + " from " + 
+                                  (session.getResourceName() != null ? session.getResourceName() : "null") + 
+                                  " to " + course.getAssignedRoom());
+                        } else {
+                            // Look up the resource name from our resource map
+                            Resource resource = allResourcesMap.get(course.getAssignedResourceId());
+                            if (resource != null) {
+                                session.setResourceName(resource.getName());
+                                Log.d(TAG, "Set resource name for " + course.getName() + " to " + 
+                                      resource.getName() + " from resource lookup");
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // IMPORTANT: Explicitly set the department for each session to ensure proper filtering
+            session.setDepartment(department);
+            
             // Create session path
             String sessionPath = session.getId();
             allUpdates.put(sessionPath, session);
             
             Log.d(TAG, "Added session: " + session.getCourseName() + " on " + session.getDayOfWeek() + 
-                      " at " + session.getStartTime() + " in " + session.getResourceName() + 
-                      " with " + session.getLecturerName());
+                  " at " + session.getStartTime() + " in " + session.getResourceName() + 
+                  " with " + session.getLecturerName());
         }
         
         // Save all sessions in a batch
@@ -1683,8 +1754,15 @@ public class UnifiedTimetableGeneratorActivity extends AppCompatActivity {
                 return true;
             } else {
                 Log.d(TAG, "Course department '" + courseDept + "' does NOT match target department '" + targetDept + "'");
+                // If the course has an explicit department that doesn't match this department,
+                // we should NOT use fallback matching methods for cross-department courses
+                Log.d(TAG, "Course " + course.getName() + " has explicit department '" + courseDept + 
+                       "' that does not match target department '" + targetDept + "', skipping fallback matches");
+                return false;
             }
         }
+        
+        // If we get here, the course has no explicit department field, so try fallback methods
         
         // If we have lecturerName field directly assigned and it matches a lecturer in this department
         String lecturerName = course.getLecturerName();
@@ -2063,6 +2141,12 @@ public class UnifiedTimetableGeneratorActivity extends AppCompatActivity {
         String currentDay = originalSession.getDayOfWeek();
         String currentStartTime = originalSession.getStartTime();
         
+        // Store the original resource ID to ensure it's preserved during rescheduling
+        String originalResourceId = originalSession.getResourceId();
+        String originalResourceName = getResourceNameById(originalResourceId);
+        Log.d(TAG, "Attempting to reschedule session while preserving assigned room: " + 
+              originalResourceName + " (ID: " + originalResourceId + ")");
+        
         // Try to find an alternative time slot
         String[] daysOfWeek = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday"};
         String[] timeSlots = {"09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00"};
@@ -2080,15 +2164,21 @@ public class UnifiedTimetableGeneratorActivity extends AppCompatActivity {
                 
                 // Check if this time slot is available
                 if (isTimeSlotAvailable(owningDept, originalSession, day, time, endTime)) {
-                    // Update the session with the new time slot
+                    // Update the session with the new time slot ONLY - preserve the room assignment
                     originalSession.setDayOfWeek(day);
                     originalSession.setStartTime(time);
                     originalSession.setEndTime(endTime);
                     
+                    // Verify room has not changed
+                    if (!originalSession.getResourceId().equals(originalResourceId)) {
+                        Log.e(TAG, "Error: Room assignment changed during rescheduling. Restoring original room.");
+                        originalSession.setResourceId(originalResourceId); // Explicitly restore original room if changed
+                    }
+                    
                     Log.d(TAG, "Rescheduled session " + originalSession.getCourseName() + 
                           " for department " + owningDept + " from " + 
                           currentDay + " " + currentStartTime + " to " + 
-                          day + " " + time);
+                          day + " " + time + " while preserving original room: " + originalResourceName);
                     
                     return true;
                 }
@@ -2096,6 +2186,8 @@ public class UnifiedTimetableGeneratorActivity extends AppCompatActivity {
         }
         
         // Could not find an available time slot
+        Log.d(TAG, "Could not find an available time slot while preserving room assignment for " + 
+               originalSession.getCourseName());
         return false;
     }
     
@@ -2110,6 +2202,10 @@ public class UnifiedTimetableGeneratorActivity extends AppCompatActivity {
      */
     private boolean isTimeSlotAvailable(String department, TimetableSession sessionToMove, 
                                        String day, String startTime, String endTime) {
+        // IMPORTANT: This method only checks time availability
+        // It does NOT modify or suggest alternative room assignments
+        // The original room assignment from sessionToMove MUST be preserved
+        
         // Check if this slot conflicts with any existing session in this department
         Timetable timetable = departmentTimetables.get(department);
         if (timetable != null && timetable.getSessions() != null) {
@@ -2147,7 +2243,8 @@ public class UnifiedTimetableGeneratorActivity extends AppCompatActivity {
                     if (otherSession.getDayOfWeek().equals(day) && 
                         timeOverlaps(otherSession.getStartTime(), otherSession.getEndTime(), 
                                     startTime, endTime)) {
-                        // Check resource conflict
+                        // Check resource conflict - this ensures we don't double-book the same room
+                        // This preserves the original room assignment by ensuring it's available at the new time
                         if (otherSession.getResourceId().equals(sessionToMove.getResourceId())) {
                             return false;
                         }
@@ -2161,7 +2258,7 @@ public class UnifiedTimetableGeneratorActivity extends AppCompatActivity {
             }
         }
         
-        // No conflicts found
+        // No conflicts found - the time slot is available while preserving the original room assignment
         return true;
     }
     
@@ -2181,5 +2278,186 @@ public class UnifiedTimetableGeneratorActivity extends AppCompatActivity {
             Log.e(TAG, "Error parsing time for overlap check", e);
             return false;
         }
+    }
+    
+    /**
+     * Consolidate and upload lecturer timetables
+     */
+    private void consolidateAndUploadLecturerTimetables(Map<String, Timetable> departmentTimetables) {
+        if (departmentTimetables == null || departmentTimetables.isEmpty()) {
+            Log.e(TAG, "Cannot consolidate lecturer timetables: No department timetables available");
+            return;
+        }
+
+        Log.d(TAG, "Consolidating and uploading lecturer timetables");
+        runOnUiThread(() -> Toast.makeText(this, "Consolidating lecturer timetables...", Toast.LENGTH_SHORT).show());
+
+        // CRITICAL: Move all of this processing to a background thread to avoid ANR
+        new Thread(() -> {
+            try {
+                // Map to hold lecturer timetables across all departments
+                Map<String, List<TimetableSession>> lecturerTimetables = new HashMap<>();
+        
+                // Iterate through all department sessions to extract sessions by lecturer
+                for (Map.Entry<String, Timetable> entry : departmentTimetables.entrySet()) {
+                    String department = entry.getKey();
+                    Timetable timetable = entry.getValue();
+        
+                    if (timetable == null || timetable.getSessions() == null) continue;
+        
+                    for (TimetableSession session : timetable.getSessions()) {
+                        String lecturerId = session.getLecturerId();
+                        if (lecturerId == null || lecturerId.isEmpty()) continue;
+        
+                        // Add department information to the session if it's not already there
+                        if (session.getDepartment() == null || session.getDepartment().isEmpty()) {
+                            session.setDepartment(department);
+                        }
+        
+                        // Get or create the session list for this lecturer
+                        List<TimetableSession> lecturerSessions = lecturerTimetables.getOrDefault(lecturerId, new ArrayList<>());
+                        lecturerSessions.add(session);
+                        lecturerTimetables.put(lecturerId, lecturerSessions);
+                    }
+                }
+        
+                // Upload each lecturer's consolidated timetable to Firebase
+                DatabaseReference baseRef = FirebaseDatabase.getInstance().getReference().child("lecturer_timetables");
+                
+                // Keep track of how many uploads are pending
+                final CountDownLatch latch = new CountDownLatch(lecturerTimetables.size());
+                final AtomicBoolean hasError = new AtomicBoolean(false);
+        
+                for (Map.Entry<String, List<TimetableSession>> entry : lecturerTimetables.entrySet()) {
+                    String lecturerId = entry.getKey();
+                    List<TimetableSession> sessions = entry.getValue();
+        
+                    Log.d(TAG, "Uploading " + sessions.size() + " sessions for lecturer: " + lecturerId);
+        
+                    // Create a map entry for this lecturer's timetable
+                    // This will overwrite any existing timetable for this lecturer
+                    baseRef.child(lecturerId).setValue(sessions)
+                        .addOnSuccessListener(aVoid -> {
+                            Log.d(TAG, "Successfully uploaded timetable for lecturer: " + lecturerId);
+                            latch.countDown();
+                            
+                            // If this was the last upload and there were no errors, show success message
+                            if (latch.getCount() == 0 && !hasError.get()) {
+                                runOnUiThread(() -> {
+                                    Toast.makeText(UnifiedTimetableGeneratorActivity.this, 
+                                        "All lecturer timetables uploaded successfully", Toast.LENGTH_SHORT).show();
+                                });
+                            }
+                        })
+                        .addOnFailureListener(e -> {
+                            hasError.set(true);
+                            Log.e(TAG, "Failed to upload timetable for lecturer: " + lecturerId, e);
+                            
+                            // Show error for the first failure only
+                            if (!hasError.getAndSet(true)) {
+                                runOnUiThread(() -> {
+                                    Toast.makeText(UnifiedTimetableGeneratorActivity.this, 
+                                        "Error uploading lecturer timetables", Toast.LENGTH_SHORT).show();
+                                });
+                            }
+                            
+                            // Still decrement the counter to avoid waiting forever
+                            latch.countDown();
+                        });
+                }
+                
+                // Wait for all uploads to complete with a timeout
+                try {
+                    // Wait up to 30 seconds for all uploads to complete
+                    boolean completed = latch.await(30, TimeUnit.SECONDS);
+                    if (!completed) {
+                        Log.w(TAG, "Some lecturer timetable uploads did not complete within timeout");
+                    }
+                } catch (InterruptedException e) {
+                    Log.e(TAG, "Interrupted while waiting for lecturer timetable uploads", e);
+                    Thread.currentThread().interrupt();
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error in lecturer timetable consolidation", e);
+                runOnUiThread(() -> {
+                    Toast.makeText(UnifiedTimetableGeneratorActivity.this, 
+                        "Error processing lecturer timetables", Toast.LENGTH_SHORT).show();
+                });
+            }
+        }).start();
+    }
+    
+    /**
+     * Consolidate all department timetables into a single view for admin access
+     * This creates a unified view of all department timetables in Firebase
+     */
+    private void consolidateAllDepartmentsTimetable() {
+        Log.d(TAG, "Consolidating all department timetables for admin view");
+        
+        // Reference to the new consolidated timetable node in Firebase
+        DatabaseReference allDeptTimetableRef = FirebaseDatabase.getInstance().getReference()
+                .child("all_departments_timetable");
+                
+        // Clear the existing consolidated timetable first
+        allDeptTimetableRef.removeValue().addOnCompleteListener(task -> {
+            if (task.isSuccessful()) {
+                // Get reference to all department timetables
+                DatabaseReference deptTimetablesRef = FirebaseDatabase.getInstance().getReference()
+                        .child("department_timetableSessions");
+                
+                deptTimetablesRef.addListenerForSingleValueEvent(new ValueEventListener() {
+                    @Override
+                    public void onDataChange(@NonNull DataSnapshot dataSnapshot) {
+                        // Prepare a batch update for all sessions
+                        Map<String, Object> consolidatedSessions = new HashMap<>();
+                        
+                        // Process all departments
+                        for (DataSnapshot deptSnapshot : dataSnapshot.getChildren()) {
+                            String departmentName = deptSnapshot.getKey();
+                            
+                            // Process all sessions in this department
+                            for (DataSnapshot sessionSnapshot : deptSnapshot.getChildren()) {
+                                try {
+                                    TimetableSession session = sessionSnapshot.getValue(TimetableSession.class);
+                                    if (session != null) {
+                                        // Add the department name to the session if not already there
+                                        if (session.getDepartment() == null || session.getDepartment().isEmpty()) {
+                                            session.setDepartment(departmentName);
+                                        }
+                                        
+                                        // Add to our consolidated batch with a unique key
+                                        String key = sessionSnapshot.getKey();
+                                        consolidatedSessions.put(key, session);
+                                    }
+                                } catch (Exception e) {
+                                    Log.e(TAG, "Error consolidating session from " + departmentName, e);
+                                }
+                            }
+                        }
+                        
+                        // Upload the consolidated batch
+                        if (!consolidatedSessions.isEmpty()) {
+                            allDeptTimetableRef.updateChildren(consolidatedSessions)
+                                    .addOnSuccessListener(aVoid -> {
+                                        Log.d(TAG, "Successfully uploaded consolidated timetable with " 
+                                                + consolidatedSessions.size() + " sessions");
+                                    })
+                                    .addOnFailureListener(e -> {
+                                        Log.e(TAG, "Failed to upload consolidated timetable", e);
+                                    });
+                        } else {
+                            Log.w(TAG, "No sessions found to consolidate");
+                        }
+                    }
+                    
+                    @Override
+                    public void onCancelled(@NonNull DatabaseError databaseError) {
+                        Log.e(TAG, "Error reading department timetables for consolidation", databaseError.toException());
+                    }
+                });
+            } else {
+                Log.e(TAG, "Failed to clear existing consolidated timetable", task.getException());
+            }
+        });
     }
 }

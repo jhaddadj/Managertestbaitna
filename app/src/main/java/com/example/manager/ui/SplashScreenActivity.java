@@ -82,7 +82,7 @@ public class SplashScreenActivity extends AppCompatActivity {
                                 if ("admin".equals(role)) {
                                     // Redirect to admin main activity
                                     redirectToAdmin();
-                                } else if ("lecture".equals(role)) {
+                                } else if ("lecturer".equals(role) || "lecture".equals(role)) {
                                     // Redirect to lecturer main activity
                                     redirectToLecturer();
                                 } else if ("student".equals(role)) {
@@ -160,7 +160,7 @@ public class SplashScreenActivity extends AppCompatActivity {
                 // Redirect based on role
                 if ("admin".equals(role)) {
                     redirectToAdmin();
-                } else if ("lecture".equals(role)) {
+                } else if ("lecturer".equals(role) || "lecture".equals(role)) {
                     redirectToLecturer();
                 } else if ("student".equals(role)) {
                     redirectToStudent();
