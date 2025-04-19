@@ -161,10 +161,12 @@ public class ChocoSolverTimetableGenerator implements TimetableGenerator {
 
         // Create flat list of all sessions to schedule
         List<SessionToSchedule> allSessions = new ArrayList<>();
-        
+
+        Map<String, List<IntVar>> courseDayVars = new HashMap<>();
+
         // Add logging to track the scheduling process
         Log.d(TAG, "Starting to schedule sessions for each course...");
-        
+
         int sessionIndex = 0;
         for (Course course : validCourses) {
             // Determine the number of sessions to schedule for this course
@@ -263,7 +265,12 @@ public class ChocoSolverTimetableGenerator implements TimetableGenerator {
             sessionHourVars.put(sIndex, hour);
             sessionResourceVars.put(sIndex, resource);
             sessionLecturerVars.put(sIndex, lecturer);
-            
+
+            courseDayVars
+                    .computeIfAbsent(course.getId(), k -> new ArrayList<>())
+                    .add(day);
+
+
             // Log variable creation
             Log.d(TAG, "Created variables for session " + sIndex + " of course " + course.getName() + 
                 " (" + course.getId() + "): " + 
@@ -287,7 +294,19 @@ public class ChocoSolverTimetableGenerator implements TimetableGenerator {
         Log.d(TAG, "Before solving, number of hour variables: " + sessionHourVars.size());
         Log.d(TAG, "Variable names sample: " + 
               (sessionDayVars.isEmpty() ? "empty" : sessionDayVars.values().iterator().next().getName()));
-        
+
+        // Apply spreadCourseSessions constraint (enforce different days for same-course sessions)
+        if (options.shouldSpreadCourseSessions()) {
+            for (Map.Entry<String, List<IntVar>> entry : courseDayVars.entrySet()) {
+                List<IntVar> dayVars = entry.getValue();
+                if (dayVars.size() > 1) {
+                    model.allDifferent(dayVars.toArray(new IntVar[0])).post();
+                    Log.d(TAG, "Applied allDifferent constraint to spread sessions for course: " + entry.getKey());
+                }
+            }
+        }
+
+
         // Try to find a solution
         boolean solved = solver.solve();
         
