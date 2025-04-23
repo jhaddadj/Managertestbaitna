@@ -210,6 +210,11 @@ public class ViewTimetableActivity extends AppCompatActivity {
         // Set up download PDF button
         findViewById(R.id.downloadPdfButton).setOnClickListener(v -> createAndDownloadPdf());
 
+        // Hide the download PDF button for the consolidated all departments view
+        if (isAllDepartmentsView) {
+            findViewById(R.id.downloadPdfButton).setVisibility(View.GONE);
+        }
+
         // Log for debugging view structure
         View mainLayout = findViewById(R.id.main);
         if (mainLayout == null) {
