@@ -30,6 +30,28 @@
     <string name="simple_solver_desc">Fast greedy algorithm that works on all devices. May produce sub-optimal solutions.</string>
     <string name="choco_solver_desc">Advanced constraint programming that finds optimal solutions. May be slower but produces better timetables.</string>
     <string name="solver_selection_title">Solver Type:</string>
+    <string name="terms_and_conditions_text">Welcome to the University Timetable Management System.\n\n
+1. Data Usage and Privacy\n
+- Your registration information will be stored securely in our database.\n
+- Personal information will only be used for account management and system functionality.\n
+- Uploaded documents (e.g., ID and university contract) will be stored securely and are only accessible to system administrators.\n\n
+
+2. Account Approval\n
+- All registrations are subject to review and approval by administrators.\n
+- Account approval may take up to 24-48 hours.\n
+- You will not be able to access the system until your account is approved.\n\n
+
+3. System Usage\n
+- The application system is for educational purposes only.\n
+- You agree to use the system in accordance with university policies.\n
+- Any misuse of the system may result in account suspension.\n\n
+
+4. Responsibilities\n
+- You are responsible for maintaining the confidentiality of your account information.\n
+- You agree to notify administrators of any unauthorized use of your account.\n
+- You are responsible for keeping your contact information up-to-date.\n\n
+
+By accepting these terms, you acknowledge that you have read and understood the conditions for using the University Timetable Management System.</string>
     <string-array name="resource_types">
         <item>Room</item>
         <item>Facility</item>

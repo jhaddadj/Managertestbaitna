@@ -57,18 +57,16 @@ public class LoginActivity extends AppCompatActivity {
         binding.loginButton.setOnClickListener(v -> loginUser());
         binding.registerText.setOnClickListener(v -> {
             if ("1".equals(roles)) {
-                Intent intent = new Intent(LoginActivity.this, AdminRegistrationActivity.class);
+                Intent intent = new Intent(LoginActivity.this, ConsentActivity.class);
                 intent.putExtra("role", "1");
                 startActivity(intent);
             } else if ("2".equals(roles)) {
-                Intent intent = new Intent(LoginActivity.this, LecturarRegistrationActivity.class);
+                Intent intent = new Intent(LoginActivity.this, ConsentActivity.class);
                 intent.putExtra("role", "2");
-
                 startActivity(intent);
             } else if ("3".equals(roles)) {
-                Intent intent = new Intent(LoginActivity.this, StudentRegistrationActivity.class);
+                Intent intent = new Intent(LoginActivity.this, ConsentActivity.class);
                 intent.putExtra("role", "3");
-
                 startActivity(intent);
             }
 

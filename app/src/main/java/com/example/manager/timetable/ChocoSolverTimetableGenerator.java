@@ -308,7 +308,14 @@ public class ChocoSolverTimetableGenerator implements TimetableGenerator {
 
 
         // Try to find a solution
+
+        System.gc();
+        long beforeUsedMem = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
         boolean solved = solver.solve();
+        long afterUsedMem = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
+        long usedMemoryBytes = afterUsedMem - beforeUsedMem;
+        long usedMemoryMB = usedMemoryBytes / (1024 * 1024);
+        Log.d("MemoryTest", "CHOCO Solver memory usage: " + usedMemoryMB + " MB");
         
         if (solved) {
             Log.d(TAG, "Solution found!");
@@ -377,7 +384,13 @@ public class ChocoSolverTimetableGenerator implements TimetableGenerator {
             
             // Increase timeout and try again
             solver.limitTime(DEFAULT_TIMEOUT_MS * 2);
+            System.gc();
+            long beforeUsedMemRetry = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
             solved = solver.solve();
+            long afterUsedMemRetry = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
+            long usedMemoryBytesRetry = afterUsedMemRetry - beforeUsedMemRetry;
+            long usedMemoryMBRetry = usedMemoryBytesRetry / (1024 * 1024);
+            Log.d("MemoryTest", "CHOCO Solver retry memory usage: " + usedMemoryMBRetry + " MB");
             
             if (solved) {
                 Log.d(TAG, "Solution found with increased timeout!");
@@ -1406,20 +1419,20 @@ public class ChocoSolverTimetableGenerator implements TimetableGenerator {
                 }
             }
             
-            // If we have any back-to-back penalties (we should), create a sum variable
+            // If there are any back-to-back penalties (then), create a sum variable
             if (!backToBackPenalties.isEmpty()) {
                 IntVar totalBackToBackPenalty = model.intVar("totalBackToBackStudents", 0, backToBackPenalties.size());
                 model.sum(backToBackPenalties.toArray(new IntVar[0]), "=", totalBackToBackPenalty).post();
                 
-                // Still use this in the objective with very high weight (20)
+                //  objective with very high weight (20)
                 IntVar weightedPenalty = model.intVar("weightedBackToBackStudents", 0, backToBackPenalties.size() * 20);
                 model.arithm(weightedPenalty, "=", totalBackToBackPenalty, "*", 20).post();
                 
-                // Add this to our list of penalties with extremely high weight
+                //  list of penalties with extremely high weight
                 allPenalties.add(weightedPenalty);
                 penaltyWeights.put("studentBackToBack", 20);
                 
-                // Set this as a primary objective
+                // Set a primary objective
                 model.setObjective(Model.MINIMIZE, weightedPenalty);
                 
                 Log.d(TAG, "Added student back-to-back constraint with extremely high weight (20)");

@@ -4,7 +4,6 @@ import android.content.Intent;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.widget.Toast;
-
 import androidx.activity.EdgeToEdge;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.graphics.Insets;
@@ -13,6 +12,7 @@ import androidx.core.view.WindowInsetsCompat;
 
 import com.example.manager.R;
 import com.example.manager.databinding.ActivityMainBinding;
+import com.example.manager.testing.TestingUserInteractionLatency;
 import com.example.manager.ui.SelectActivity;
 import com.google.firebase.auth.FirebaseAuth;
 
@@ -30,6 +30,7 @@ public class AdminMainActivity extends AppCompatActivity {
         EdgeToEdge.enable(this); // Enable edge-to-edge display for modern UI appearance
         binding= ActivityMainBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
+
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
             Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
             v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom);
@@ -42,6 +43,14 @@ public class AdminMainActivity extends AppCompatActivity {
         binding.timetableInitializationButton.setOnClickListener(v -> openTimetableInitialization());
         binding.reuestCheckButton.setOnClickListener(v -> openRequestCheck());
         binding.logoutButton.setOnClickListener(v -> logout());
+        
+        // Add a long press listener on timetable button to trigger latency testing
+        // This creates a hidden developer feature
+        binding.timetableInitializationButton.setOnLongClickListener(v -> {
+            // Start the latency tests
+            TestingUserInteractionLatency.startLatencyTests(this);
+            return true; // Consume the long press event
+        });
     }
 
     /**

@@ -64,6 +64,9 @@
             android:name=".ui.LoginActivity"
             android:exported="false" />
         <activity
+            android:name=".ui.ConsentActivity"
+            android:exported="false" />
+        <activity
             android:name=".admin.ui.AdminRegistrationActivity"
             android:exported="false" />
         <activity
